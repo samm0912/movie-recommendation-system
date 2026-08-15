@@ -10,6 +10,7 @@ Features:
 import os
 from flask import Flask, render_template, request, jsonify, session
 from recommender import MovieRecommender
+from chatbot import MovieChatbotEngine
 import pandas as pd
 
 # Load .env if present
@@ -23,6 +24,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "movie_rec_secret_key_2026")
 
 rec = MovieRecommender()
+chatbot = MovieChatbotEngine(rec)
 
 USERS = {
     "demo":  {"password": "demo123",  "id": 1, "name": "Demo User", "liked": [278, 238, 155], "ratings": {278: 5, 238: 5, 155: 5}},
@@ -313,6 +315,31 @@ def api_stats():
     stats["genres"] = rec.get_genres()
     stats["total_users"] = len(USERS)
     return jsonify(stats)
+
+
+# ── FEATURE: AI / LLM Chatbot Concierge (CineBot) ─────────────────────────
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    """Conversational Recommender Endpoint with Gemini AI & Local NLP Fallback"""
+    data = request.json or {}
+    message = data.get("message", "").strip()
+    history = data.get("history", [])
+    context_movie_id = data.get("context_movie_id")
+    user = session.get("user")
+    
+    response = chatbot.chat(
+        message=message,
+        history=history,
+        user=user,
+        context_movie_id=context_movie_id
+    )
+    return jsonify(response)
+
+
+@app.route("/api/chat/status")
+def api_chat_status():
+    """Returns AI status and engine mode"""
+    return jsonify(chatbot.get_status())
 
 
 if __name__ == "__main__":

@@ -654,3 +654,229 @@ function escapeJsStr(str) {
   if (!str) return '';
   return String(str).replace(/'/g, "\\'").replace(/"/g, '\\"');
 }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   CINEBOT AI CONVERSATIONAL CONTROLLER
+════════════════════════════════════════════════════════════════════════════ */
+let cinebotHistory = [];
+let cinebotIsLoading = false;
+
+function toggleChatbot() {
+  const win = document.getElementById('cinebotWindow');
+  if (!win) return;
+  const isOpen = win.classList.toggle('open');
+  if (isOpen) {
+    setTimeout(() => {
+      const input = document.getElementById('cinebotInput');
+      if (input) input.focus();
+    }, 150);
+  }
+}
+
+function openChatbot() {
+  const win = document.getElementById('cinebotWindow');
+  if (win && !win.classList.contains('open')) {
+    win.classList.add('open');
+    setTimeout(() => {
+      const input = document.getElementById('cinebotInput');
+      if (input) input.focus();
+    }, 150);
+  }
+}
+
+function closeChatbot() {
+  const win = document.getElementById('cinebotWindow');
+  if (win) win.classList.remove('open');
+}
+
+function clearChat() {
+  cinebotHistory = [];
+  const body = document.getElementById('cinebotBody');
+  if (body) {
+    body.innerHTML = `
+      <div class="cinebot-msg bot intro-msg">
+        <div class="cinebot-msg-bubble">
+          <p>👋 Chat cleared! I'm ready for new questions or recommendations.</p>
+          <p>Ask for movies like <em>"Interstellar"</em>, request specific moods, or say <em>"Surprise Me"</em>!</p>
+        </div>
+      </div>`;
+  }
+  updateChatChips(["🌌 Interstellar", "🍿 Surprise Me", "😂 Feel-Good", "🧠 How ML Works"]);
+}
+
+function sendChatPrompt(promptText) {
+  openChatbot();
+  const input = document.getElementById('cinebotInput');
+  if (input) input.value = promptText;
+  submitChatInput();
+}
+
+function submitChatInput() {
+  const input = document.getElementById('cinebotInput');
+  if (!input) return;
+  const message = input.value.trim();
+  if (!message || cinebotIsLoading) return;
+  input.value = '';
+  executeChat(message);
+}
+
+function formatMarkdownText(text) {
+  if (!text) return '';
+  let formatted = escapeHtml(text);
+  // Bold **text**
+  formatted = formatted.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  // Italic *text*
+  formatted = formatted.replace(/\*(.*?)\*/g, '<em>$1</em>');
+  // Line breaks
+  formatted = formatted.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>');
+  return `<p>${formatted}</p>`;
+}
+
+async function executeChat(message) {
+  const body = document.getElementById('cinebotBody');
+  const sendBtn = document.getElementById('cinebotSendBtn');
+  const input = document.getElementById('cinebotInput');
+  if (!body) return;
+
+  cinebotIsLoading = true;
+  if (sendBtn) sendBtn.disabled = true;
+  if (input) input.disabled = true;
+
+  // 1. Render user message bubble
+  const userMsgEl = document.createElement('div');
+  userMsgEl.className = 'cinebot-msg user';
+  userMsgEl.innerHTML = `<div class="cinebot-msg-bubble"><p>${escapeHtml(message)}</p></div>`;
+  body.appendChild(userMsgEl);
+  body.scrollTop = body.scrollHeight;
+
+  // 2. Render typing indicator
+  const typingEl = document.createElement('div');
+  typingEl.className = 'cinebot-msg bot typing-msg';
+  typingEl.id = 'cinebotTyping';
+  typingEl.innerHTML = `
+    <div class="cinebot-msg-bubble typing-bubble">
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+    </div>`;
+  body.appendChild(typingEl);
+  body.scrollTop = body.scrollHeight;
+
+  try {
+    const data = await apiFetch('/api/chat', 'POST', {
+      message: message,
+      history: cinebotHistory
+    });
+
+    // Remove typing bubble
+    const currentTyping = document.getElementById('cinebotTyping');
+    if (currentTyping) currentTyping.remove();
+
+    if (data && data.success) {
+      // 3. Render bot response message
+      const botMsgEl = document.createElement('div');
+      botMsgEl.className = 'cinebot-msg bot';
+
+      let movieCardsHtml = '';
+      if (data.movies && data.movies.length > 0) {
+        movieCardsHtml = renderChatMovieCards(data.movies);
+      }
+
+      botMsgEl.innerHTML = `
+        <div class="cinebot-msg-bubble">
+          ${formatMarkdownText(data.reply)}
+          ${movieCardsHtml}
+        </div>`;
+      body.appendChild(botMsgEl);
+
+      // Update mode badge
+      const tagEl = document.getElementById('cinebotModelTag');
+      if (tagEl) {
+        tagEl.textContent = (data.mode === 'gemini_ai') ? 'Gemini AI' : 'Hybrid ML';
+      }
+
+      // Update chips if provided
+      if (data.suggested_prompts && data.suggested_prompts.length > 0) {
+        updateChatChips(data.suggested_prompts);
+      }
+
+      // Append to local history (limit to last 10 turns)
+      cinebotHistory.push({ role: 'user', content: message });
+      cinebotHistory.push({ role: 'model', content: data.reply });
+      if (cinebotHistory.length > 12) {
+        cinebotHistory = cinebotHistory.slice(-10);
+      }
+    } else {
+      const errEl = document.createElement('div');
+      errEl.className = 'cinebot-msg bot';
+      errEl.innerHTML = `
+        <div class="cinebot-msg-bubble">
+          <p>⚠️ Sorry, I encountered an issue retrieving recommendations. Please try asking again!</p>
+        </div>`;
+      body.appendChild(errEl);
+    }
+  } catch (err) {
+    const currentTyping = document.getElementById('cinebotTyping');
+    if (currentTyping) currentTyping.remove();
+
+    const errEl = document.createElement('div');
+    errEl.className = 'cinebot-msg bot';
+    errEl.innerHTML = `
+      <div class="cinebot-msg-bubble">
+        <p>⚠️ Connection issue. Please check your network and try again.</p>
+      </div>`;
+    body.appendChild(errEl);
+  } finally {
+    cinebotIsLoading = false;
+    if (sendBtn) sendBtn.disabled = false;
+    if (input) {
+      input.disabled = false;
+      input.focus();
+    }
+    body.scrollTop = body.scrollHeight;
+  }
+}
+
+function renderChatMovieCards(movies) {
+  if (!movies || !movies.length) return '';
+  const fallbackImg = 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=500&auto=format&fit=crop&q=60';
+  
+  const cards = movies.map(m => {
+    const poster = m.poster || fallbackImg;
+    const genres = (m.genres || '').replace(/\|/g, ' · ').slice(0, 24);
+    const title = escapeHtml(m.title);
+    const trailerBtn = (m.has_trailer || m.trailer_key)
+      ? `<button class="chat-action-btn chat-btn-trailer" onclick="event.stopPropagation(); openTrailer('${m.trailer_key || m.id}', '${escapeJsStr(m.title)}')">▶ Trailer</button>`
+      : `<button class="chat-action-btn chat-btn-trailer" onclick="event.stopPropagation(); openTrailer('${m.id}', '${escapeJsStr(m.title)}')">▶ Trailer</button>`;
+
+    return `
+      <div class="chat-movie-card" onclick="window.location='/movie/${m.id}'">
+        <img class="chat-card-poster" src="${poster}" alt="${title}" loading="lazy" onerror="this.onerror=null; this.src='${fallbackImg}'">
+        <div class="chat-card-content">
+          <div>
+            <div class="chat-card-title" title="${title}">${title}</div>
+            <div class="chat-card-meta">
+              <span class="chat-card-rating">⭐ ${m.rating}</span>
+              <span>· ${m.year}</span>
+            </div>
+            <div class="chat-card-genres">${escapeHtml(genres)}</div>
+          </div>
+          <div class="chat-card-actions">
+            ${trailerBtn}
+            <button class="chat-action-btn chat-btn-view" onclick="event.stopPropagation(); window.location='/movie/${m.id}'">ℹ Details</button>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+
+  return `<div class="chat-cards-list">${cards}</div>`;
+}
+
+function updateChatChips(prompts) {
+  const chipsContainer = document.getElementById('cinebotChips');
+  if (!chipsContainer || !prompts || !prompts.length) return;
+  chipsContainer.innerHTML = prompts.map(p => `
+    <button class="chat-chip" onclick="sendChatPrompt('${escapeJsStr(p)}')">${escapeHtml(p)}</button>
+  `).join('');
+}
+

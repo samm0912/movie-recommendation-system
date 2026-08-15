@@ -147,6 +147,44 @@ def run_tests():
     compare_data = json.loads(resp.data)
     test("Compare endpoint returns multi-algorithm results", "content_based" in compare_data and "collaborative" in compare_data and "hybrid" in compare_data)
 
+    # ──────────────────────────────────────────────────────────────────────────
+    print("\nSTEP 7: CINEBOT CONVERSATIONAL AI & LOCAL FALLBACK VERIFICATION")
+    # GET /api/chat/status
+    resp = client.get('/api/chat/status')
+    test("GET /api/chat/status returns 200 OK", resp.status_code == 200)
+    status_data = json.loads(resp.data)
+    test("CineBot status is available", status_data.get("available") is True, f"Mode: {status_data.get('mode')}")
+
+    # Test Query 1: Specific Title match ("Interstellar")
+    resp = client.post('/api/chat', json={"message": "Interstellar"})
+    test("POST /api/chat for 'Interstellar' returns 200 OK", resp.status_code == 200)
+    chat_data = json.loads(resp.data)
+    test("Chat response includes success flag", chat_data.get("success") is True)
+    test("Chat response contains friendly reply text", len(chat_data.get("reply", "")) > 10)
+    movies = chat_data.get("movies", [])
+    test("Chat returns matched Interstellar + similar recommendations", len(movies) >= 2)
+    if movies:
+        test("First movie returned is Interstellar", "interstellar" in movies[0].get("title", "").lower())
+        test("Returned movies contain poster, rating, and genres", bool(movies[0].get("poster") and movies[0].get("rating") and movies[0].get("genres")))
+
+    # Test Query 2: Surprise Me intent
+    resp = client.post('/api/chat', json={"message": "Surprise me with a top-rated movie"})
+    test("POST /api/chat for 'Surprise Me' returns 200 OK", resp.status_code == 200)
+    surprise_chat = json.loads(resp.data)
+    test("Surprise chat returns recommendation", len(surprise_chat.get("movies", [])) >= 1)
+
+    # Test Query 3: Mood intent ("feel-good comedy")
+    resp = client.post('/api/chat', json={"message": "I want a feel-good comedy"})
+    test("POST /api/chat for 'feel-good comedy' returns 200 OK", resp.status_code == 200)
+    mood_chat = json.loads(resp.data)
+    test("Mood chat returns comedy/family recommendations", len(mood_chat.get("movies", [])) >= 1)
+
+    # Test Query 4: ML explanation intent
+    resp = client.post('/api/chat', json={"message": "How does the recommendation algorithm work?"})
+    test("POST /api/chat for algorithm explanation returns 200 OK", resp.status_code == 200)
+    algo_chat = json.loads(resp.data)
+    test("Algorithm explanation details TF-IDF and Collaborative filtering", "TF-IDF" in algo_chat.get("reply", "") or "Hybrid" in algo_chat.get("reply", ""))
+
     print("\n" + "=" * 65)
     print(f"TEST SUMMARY: {passed_count}/{total_count} TESTS PASSED ({round(passed_count/total_count*100, 1)}%)")
     print("=" * 65 + "\n")
