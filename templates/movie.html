@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ movie.title }} — Movie Recommendation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<!-- ── ULTRA-PREMIUM STREAMING PLATFORM NAVBAR ── -->
+<nav class="navbar scrolled" id="navbar">
+  <div class="nav-container">
+    <!-- Brand Logo -->
+    <a href="/" class="brand-link" title="Movie Recommendation Engine">
+      <div class="brand-symbol">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="brand-svg">
+          <polygon points="5 3 19 12 5 21 5 3" fill="url(#brandGrad)" stroke="none"/>
+          <circle cx="12" cy="12" r="9" stroke="url(#brandGrad)" stroke-width="1.8"/>
+          <defs>
+            <linearGradient id="brandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#38bdf8"/>
+              <stop offset="100%" stop-color="#6366f1"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <div class="brand-meta">
+        <span class="brand-name">MOVIE <span class="brand-highlight">RECOMMENDATION</span></span>
+        <span class="brand-badge">AI DISCOVERY</span>
+      </div>
+    </a>
+
+    <!-- Center Floating Segmented Capsule Island -->
+    <div class="nav-capsule" id="navCapsule">
+      <a href="/" class="nav-pill" data-nav="home">
+        <svg class="pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        <span class="pill-text">Back to Discovery</span>
+      </a>
+      
+      <button class="nav-pill" onclick="showGenreModal()" data-nav="discover">
+        <svg class="pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
+        <span class="pill-text">Discover</span>
+      </button>
+
+      <button class="nav-pill pill-ai" onclick="showStats()" data-nav="ai">
+        <div class="ai-glow-orb"></div>
+        <svg class="pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg>
+        <span class="pill-text">AI Studio</span>
+      </button>
+    </div>
+
+    <!-- Action Deck (Right) -->
+    <div class="nav-actions">
+      <!-- Search Input with Search Emoji Button -->
+      <form class="search-capsule" id="searchCapsule" onsubmit="event.preventDefault(); submitSearch();">
+        <button type="button" class="search-emoji-btn" onclick="submitSearch()" title="Search / AI Recommend">🔍</button>
+        <input type="text" id="searchInput" class="search-capsule-input" placeholder="Type: 'I liked Interstellar'…" onkeydown="if(event.key==='Enter'){event.preventDefault(); submitSearch();}">
+        <button type="submit" class="btn-search-go" title="Run AI Recommendation">
+          <span>Search</span>
+        </button>
+      </form>
+
+      <!-- Surprise Me Button -->
+      <button class="btn-surprise-glow" onclick="triggerSurpriseMe()" title="Get a smart instant recommendation">
+        <span class="glow-flare"></span>
+        <svg class="surprise-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/></svg>
+        <span>Surprise Me</span>
+      </button>
+
+      <!-- Profile / Sign In -->
+      {% if user %}
+        <div class="profile-capsule">
+          <div class="profile-avatar-pill">
+            <span class="avatar-letter">{{ user.name[0] }}</span>
+            <span class="status-indicator"></span>
+          </div>
+          <div class="profile-dropdown-menu">
+            <div class="dropdown-header">
+              <p class="dropdown-user-name">{{ user.name }}</p>
+              <span class="dropdown-user-role">Taste Profile Active</span>
+            </div>
+            <button onclick="logout()" class="dropdown-logout-btn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+              Sign Out
+            </button>
+          </div>
+        </div>
+      {% else %}
+        <button class="btn-signin-capsule" onclick="openLoginModal()">Sign In</button>
+      {% endif %}
+    </div>
+  </div>
+</nav>
+
+<!-- ── MOVIE DETAIL HERO ── -->
+<div class="detail-hero">
+  <div class="detail-bg" style="background-image: url('{{ movie.backdrop or movie.poster }}')"></div>
+  <div class="detail-overlay"></div>
+  <div class="detail-content">
+    <div class="detail-layout">
+      <div class="detail-poster-wrap" id="detailPosterWrap" data-trailer="{{ movie.trailer_key or '' }}" data-id="{{ movie.id }}" data-title="{{ movie.title }}" onclick="openTrailer(this)" title="Click to watch official trailer">
+        <img src="{{ movie.poster }}" alt="{{ movie.title }}" class="detail-poster"
+          onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=500&auto=format&fit=crop&q=60'">
+        <div class="poster-play-overlay">
+          <div class="play-circle">▶</div>
+          <span>Watch Trailer</span>
+        </div>
+      </div>
+      <div class="detail-info">
+        <div class="detail-badge">🎯 TF-IDF Content Match</div>
+        <h1 class="detail-title">{{ movie.title }}</h1>
+        <div class="detail-meta">
+          <span class="meta-rating">⭐ {{ movie.rating }}/10</span>
+          <span class="meta-year">{{ movie.year }}</span>
+          <span class="meta-genres">{{ movie.genres.replace('|', ' · ') }}</span>
+          <span class="meta-votes">📊 {{ "{:,}".format(movie.vote_count) }} community votes</span>
+        </div>
+
+        <p class="detail-overview">{{ movie.overview }}</p>
+
+        <!-- ── FEATURE: Interactive Star Rating ── -->
+        <div class="star-rating-section">
+          <p class="star-label">Your Rating (Updates Collaborative Filtering Engine):</p>
+          <div class="star-row" id="starRow">
+            {% for i in range(1, 6) %}
+            <span class="star {% if user_rating >= i %}filled{% endif %}"
+                  data-val="{{ i }}"
+                  onmouseover="hoverStars({{ i }})"
+                  onmouseout="resetStars({{ user_rating }})"
+                  onclick="rateMovie({{ movie.id }}, {{ i }})">★</span>
+            {% endfor %}
+          </div>
+          <p class="star-feedback" id="starFeedback">
+            {% if user_rating %}Your rating: {{ user_rating }}★ (Model active){% else %}Click a star to personalize recommendations{% endif %}
+          </p>
+        </div>
+
+        <div class="detail-actions">
+          <button class="btn-detail-trailer" id="btnDetailTrailer" data-trailer="{{ movie.trailer_key or '' }}" data-id="{{ movie.id }}" data-title="{{ movie.title }}" onclick="openTrailer(this)">
+            ▶ &nbsp;Watch Official Trailer
+          </button>
+          <button class="btn-like" id="likeBtn" onclick="likeMovie({{ movie.id }}, this)">♡ Add to List</button>
+          <button class="btn-why-hero" onclick="showWhy({{ movie.id }})">🧠 Why This?</button>
+          <button class="btn-compare" onclick="showCompare({{ movie.id }})">📊 Compare Algos</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── SIMILAR MOVIES SECTION ── -->
+<section class="row-section" style="margin-top: 2rem;">
+  <div class="row-header">
+    <h2 class="row-title">🎯 Similar Movies <span class="algo-tag">TF-IDF &amp; Cosine Similarity</span></h2>
+    <span class="row-sub">Calculated in real-time across 10,000 titles</span>
+  </div>
+  <div class="movie-row">
+    {% for m in similar %}
+    <div class="movie-card" onclick="window.location='/movie/{{ m.id }}'">
+      <div class="card-img-wrap">
+        <img src="{{ m.poster }}" alt="{{ m.title }}" loading="lazy"
+          onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=500&auto=format&fit=crop&q=60'">
+        <div class="card-badges">
+          <span class="card-badge-rating">⭐ {{ m.rating }}</span>
+          {% if m.has_trailer %}<span class="card-badge-trailer">🎬</span>{% endif %}
+        </div>
+        <div class="card-overlay">
+          <div class="card-actions">
+            {% if m.has_trailer or m.trailer_key %}
+              <button class="card-btn card-trailer" title="Watch Trailer" data-trailer="{{ m.trailer_key or '' }}" data-id="{{ m.id }}" data-title="{{ m.title }}" onclick="event.stopPropagation(); openTrailer(this)">▶ Trailer</button>
+            {% endif %}
+            <button class="card-btn card-like" onclick="event.stopPropagation(); likeMovie({{ m.id }}, this)">♡</button>
+            <button class="card-btn card-why" onclick="event.stopPropagation(); showWhy({{ m.id }})">?</button>
+          </div>
+          <div class="card-info-bottom">
+            <p class="card-title">{{ m.title }}</p>
+            <p class="card-meta"><span class="meta-star">⭐ {{ m.rating }}</span> · {{ m.year }}</p>
+            <p class="card-genres">{{ m.genres.replace('|', ' · ')[:30] }}</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<!-- ── TRAILER MODAL ── -->
+<div class="modal-overlay" id="trailerModal" onclick="closeTrailer()">
+  <div class="modal-box trailer-box" onclick="event.stopPropagation()">
+    <div class="trailer-header">
+      <div class="trailer-header-left">
+        <h3 class="trailer-title" id="trailerTitle">Official Trailer</h3>
+        <span class="trailer-badge-pill">HD Trailer</span>
+      </div>
+      <div class="trailer-header-actions">
+        <a id="trailerExternalLink" href="#" target="_blank" rel="noopener noreferrer" class="btn-trailer-external" title="Open directly on YouTube">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+          <span>Watch on YouTube ↗</span>
+        </a>
+        <button class="modal-close" onclick="closeTrailer()">✕</button>
+      </div>
+    </div>
+    <div class="video-container" id="videoContainer"></div>
+    <div class="trailer-footer-note">
+      <span>💡 If playback is restricted by YouTube privacy settings in your browser, click <strong>Watch on YouTube ↗</strong></span>
+    </div>
+  </div>
+</div>
+
+<!-- ── SURPRISE MODAL ── -->
+<div class="modal-overlay" id="surpriseModal" onclick="closeModal('surpriseModal')">
+  <div class="modal-box surprise-box" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeModal('surpriseModal')">✕</button>
+    <div class="surprise-badge">✨ Instant Recommendation</div>
+    <div id="surpriseContent"><div class="loading-state">Selecting a movie…</div></div>
+  </div>
+</div>
+
+<!-- ── WHY MODAL ── -->
+<div class="modal-overlay" id="whyModal" onclick="closeModal('whyModal')">
+  <div class="modal-box why-box" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeModal('whyModal')">✕</button>
+    <h2 class="modal-title">🧠 Why Was This Recommended?</h2>
+    <div id="whyContent"><div class="why-loading">Analyzing ML feature vectors…</div></div>
+  </div>
+</div>
+
+<!-- ── COMPARE MODAL ── -->
+<div class="modal-overlay" id="compareModal" onclick="closeModal('compareModal')">
+  <div class="modal-box compare-box" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeModal('compareModal')">✕</button>
+    <h2 class="modal-title">📊 Multi-Algorithm Benchmark</h2>
+    <div id="compareContent"></div>
+  </div>
+</div>
+
+<!-- ── LOGIN MODAL ── -->
+<div class="modal-overlay" id="loginModal" onclick="closeModal('loginModal')">
+  <div class="modal-box login-box" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeModal('loginModal')">✕</button>
+    <div class="login-logo">
+      <span class="logo-icon">📽️</span> MOVIE <span class="logo-accent">REC</span>
+    </div>
+    <h2 class="modal-title">Sign In</h2>
+    <div id="loginError" class="login-error" style="display:none"></div>
+    <input type="text" id="loginUser" class="input-field" placeholder="Username" value="demo">
+    <input type="password" id="loginPass" class="input-field" placeholder="Password" value="demo123">
+    <button class="btn-login-submit" onclick="doLogin()">Sign In</button>
+    <p class="login-hint">Demo accounts: <strong>demo / demo123</strong></p>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    var btn = document.getElementById('btnDetailTrailer');
+    if (btn) {
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        openTrailer(btn);
+      });
+    }
+    var posterWrap = document.getElementById('detailPosterWrap');
+    if (posterWrap) {
+      posterWrap.addEventListener('click', function(e) {
+        e.preventDefault();
+        openTrailer(posterWrap);
+      });
+    }
+  });
+</script>
+</body>
+</html>
