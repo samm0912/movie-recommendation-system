@@ -63,6 +63,21 @@
         </button>
       </form>
 
+      <!-- Language Dropdown Capsule -->
+      <div class="lang-capsule" id="langCapsule" title="Filter by Cinema Language">
+        <svg class="lang-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="2" y1="12" x2="22" y2="12"/>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1 4-10z"/>
+        </svg>
+        <select id="languageSelect" class="lang-select" onchange="window.location.href='/?lang=' + encodeURIComponent(this.value)" aria-label="Select Language">
+          <option value="All">All Languages</option>
+          {% for lang in languages %}
+            <option value="{{ lang.name }}" {% if movie.language == lang.name %}selected{% endif %}>{{ lang.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
       <!-- Surprise Me Button -->
       <button class="btn-surprise-glow" onclick="triggerSurpriseMe()" title="Get a smart instant recommendation">
         <span class="glow-flare"></span>
@@ -101,8 +116,8 @@
   <div class="detail-overlay"></div>
   <div class="detail-content">
     <div class="detail-layout">
-      <div class="detail-poster-wrap" id="detailPosterWrap" data-trailer="{{ movie.trailer_key or '' }}" data-id="{{ movie.id }}" data-title="{{ movie.title }}" onclick="openTrailer(this)" title="Click to watch official trailer">
-        <img src="{{ movie.poster }}" alt="{{ movie.title }}" class="detail-poster"
+      <div class="detail-poster-wrap" id="detailPosterWrap" data-trailer="{{ movie.trailer_key or '' }}" data-url="{{ movie.trailer_url or '' }}" data-id="{{ movie.id }}" data-title="{{ movie.title }}" onclick="openTrailer(this)" title="Click to watch official trailer">
+        <img src="{{ movie.poster }}" alt="{{ movie.title }}" id="detailPoster" class="detail-poster"
           onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=500&auto=format&fit=crop&q=60'">
         <div class="poster-play-overlay">
           <div class="play-circle">▶</div>
@@ -111,15 +126,36 @@
       </div>
       <div class="detail-info">
         <div class="detail-badge">🎯 TF-IDF Content Match</div>
-        <h1 class="detail-title">{{ movie.title }}</h1>
+        <h1 class="detail-title" id="detailTitle">{{ movie.title }}</h1>
         <div class="detail-meta">
           <span class="meta-rating">⭐ {{ movie.rating }}/10</span>
-          <span class="meta-year">{{ movie.year }}</span>
+          <span class="meta-year" id="detailYear">{{ movie.year }}</span>
           <span class="meta-genres">{{ movie.genres.replace('|', ' · ') }}</span>
+          <span class="meta-lang" id="detailLangBadge" style="color:var(--accent-cyan-light);font-weight:600">🌐 {{ movie.language }}</span>
           <span class="meta-votes">📊 {{ "{:,}".format(movie.vote_count) }} community votes</span>
         </div>
 
-        <p class="detail-overview">{{ movie.overview }}</p>
+        <!-- ── FEATURE: Available Languages Switcher ── -->
+        {% if movie.available_languages and movie.available_languages|length > 1 %}
+        <div class="movie-lang-switcher-section">
+          <div class="lang-switcher-label">
+            <svg class="lang-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+              <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+            </svg>
+            <span>Available Languages:</span>
+          </div>
+          <div class="lang-switcher-capsule">
+            <select id="movieLangSelect" class="movie-lang-select" onchange="switchMovieLanguage(this.value)" aria-label="Select Movie Language">
+              {% for l in movie.available_languages %}
+                <option value="{{ l }}" {% if l == movie.language %}selected{% endif %}>{{ l }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <span class="lang-variant-indicator">✨ {{ movie.available_languages|length }} Language Dubs / Editions</span>
+        </div>
+        {% endif %}
+
+        <p class="detail-overview" id="detailOverview">{{ movie.overview }}</p>
 
         <!-- ── FEATURE: Interactive Star Rating ── -->
         <div class="star-rating-section">
@@ -139,7 +175,7 @@
         </div>
 
         <div class="detail-actions">
-          <button class="btn-detail-trailer" id="btnDetailTrailer" data-trailer="{{ movie.trailer_key or '' }}" data-id="{{ movie.id }}" data-title="{{ movie.title }}" onclick="openTrailer(this)">
+          <button class="btn-detail-trailer" id="btnDetailTrailer" data-trailer="{{ movie.trailer_key or '' }}" data-url="{{ movie.trailer_url or '' }}" data-id="{{ movie.id }}" data-title="{{ movie.title }}" onclick="openTrailer(this)">
             ▶ &nbsp;Watch Official Trailer
           </button>
           <button class="btn-like" id="likeBtn" onclick="likeMovie({{ movie.id }}, this)">♡ Add to List</button>
@@ -169,8 +205,8 @@
         </div>
         <div class="card-overlay">
           <div class="card-actions">
-            {% if m.has_trailer or m.trailer_key %}
-              <button class="card-btn card-trailer" title="Watch Trailer" data-trailer="{{ m.trailer_key or '' }}" data-id="{{ m.id }}" data-title="{{ m.title }}" onclick="event.stopPropagation(); openTrailer(this)">▶ Trailer</button>
+            {% if m.has_trailer or m.trailer_key or m.trailer_url %}
+              <button class="card-btn card-trailer" title="Watch Trailer" data-trailer="{{ m.trailer_key or '' }}" data-url="{{ m.trailer_url or '' }}" data-id="{{ m.id }}" data-title="{{ m.title }}" onclick="event.stopPropagation(); openTrailer(this)">▶ Trailer</button>
             {% endif %}
             <button class="card-btn card-like" onclick="event.stopPropagation(); likeMovie({{ m.id }}, this)">♡</button>
             <button class="card-btn card-why" onclick="event.stopPropagation(); showWhy({{ m.id }})">?</button>
@@ -328,6 +364,51 @@
 <div class="toast" id="toast"></div>
 <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 <script>
+  const movieVariants = {{ movie.language_variants_json|safe }};
+
+  function switchMovieLanguage(selectedLang) {
+    if (!movieVariants || !movieVariants[selectedLang]) return;
+    const variant = movieVariants[selectedLang];
+
+    // 1. Update Poster
+    const posterImg = document.getElementById('detailPoster');
+    if (posterImg && variant.poster) {
+      posterImg.src = variant.poster;
+    }
+
+    // 2. Update Overview
+    const overviewEl = document.getElementById('detailOverview');
+    if (overviewEl && variant.overview) {
+      overviewEl.textContent = variant.overview;
+    }
+
+    // 3. Update Language Badge
+    const langBadge = document.getElementById('detailLangBadge');
+    if (langBadge && variant.language) {
+      langBadge.textContent = '🌐 ' + variant.language;
+    }
+
+    // 4. Update Trailer Button & Poster Wrap
+    const trailerBtn = document.getElementById('btnDetailTrailer');
+    if (trailerBtn) {
+      trailerBtn.setAttribute('data-trailer', variant.trailer_key || '');
+      trailerBtn.setAttribute('data-id', variant.id || '{{ movie.id }}');
+      trailerBtn.setAttribute('data-title', variant.title + ' (' + variant.language + ')');
+    }
+    const posterWrap = document.getElementById('detailPosterWrap');
+    if (posterWrap) {
+      posterWrap.setAttribute('data-trailer', variant.trailer_key || '');
+      posterWrap.setAttribute('data-id', variant.id || '{{ movie.id }}');
+      posterWrap.setAttribute('data-title', variant.title + ' (' + variant.language + ')');
+    }
+
+    // 5. Update URL state without page reload
+    if (window.history.replaceState) {
+      const newUrl = window.location.pathname + '?lang=' + encodeURIComponent(selectedLang);
+      window.history.replaceState(null, '', newUrl);
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', function() {
     var btn = document.getElementById('btnDetailTrailer');
     if (btn) {

@@ -35,11 +35,11 @@ document.addEventListener('keydown', (e) => {
 
 // ── Render Movie Card Component ───────────────────────────────────────────
 function renderCard(m) {
-  const trailerBtn = (m.has_trailer || m.trailer_key)
-    ? `<button class="card-btn card-trailer" title="Watch Trailer" data-trailer="${m.trailer_key || ''}" data-id="${m.id}" data-title="${escapeHtml(m.title)}" onclick="event.stopPropagation(); openTrailer(this)">▶ Trailer</button>`
+  const trailerBtn = (m.has_trailer || m.trailer_key || m.trailer_url)
+    ? `<button class="card-btn card-trailer" title="Watch Trailer" data-trailer="${m.trailer_key || ''}" data-url="${m.trailer_url || ''}" data-id="${m.id}" data-title="${escapeHtml(m.title)}" onclick="event.stopPropagation(); openTrailer(this)">▶ Trailer</button>`
     : '';
 
-  const trailerBadge = (m.has_trailer || m.trailer_key)
+  const trailerBadge = (m.has_trailer || m.trailer_key || m.trailer_url)
     ? `<span class="card-badge-trailer" title="Trailer Available">🎬</span>`
     : '';
 
@@ -71,29 +71,20 @@ function renderCard(m) {
     </div>`;
 }
 
-// ── Video Trailer Player Modal ────────────────────────────────────────────
+// ── Video Trailer Player Modal (Plays 100% In-Player In-Page) ─────────────
 async function openTrailer(trailerKeyOrEl, movieTitle = 'Movie') {
   let trailerKey = '';
+  let trailerUrl = '';
   let title = movieTitle || 'Movie';
+  let movieId = '';
 
   if (trailerKeyOrEl && typeof trailerKeyOrEl === 'object' && trailerKeyOrEl.dataset) {
-    trailerKey = trailerKeyOrEl.dataset.trailer || trailerKeyOrEl.dataset.id || '';
+    trailerKey = trailerKeyOrEl.dataset.trailer || '';
+    trailerUrl = trailerKeyOrEl.dataset.url || '';
+    movieId = trailerKeyOrEl.dataset.id || '';
     title = trailerKeyOrEl.dataset.title || title;
   } else {
     trailerKey = String(trailerKeyOrEl || '').trim();
-  }
-
-  // If trailerKey is empty or numeric (movie ID), fetch dynamically from backend
-  if (!trailerKey || trailerKey === 'undefined' || trailerKey === 'null' || /^\d+$/.test(trailerKey)) {
-    const movieId = trailerKey && /^\d+$/.test(trailerKey) ? trailerKey : '';
-    if (movieId) {
-      showToast('🎬 Loading trailer stream…');
-      const data = await apiFetch(`/api/trailer/${movieId}`);
-      if (data) {
-        if (data.trailer_key) trailerKey = data.trailer_key;
-        if (data.title) title = data.title;
-      }
-    }
   }
 
   const modal = document.getElementById('trailerModal');
@@ -102,30 +93,48 @@ async function openTrailer(trailerKeyOrEl, movieTitle = 'Movie') {
   const extLink = document.getElementById('trailerExternalLink');
   if (!modal || !container) return;
 
-  let youtubeUrl = '';
-  let embedUrl = '';
+  if (titleEl) titleEl.textContent = `${title} — Official Trailer`;
 
-  if (trailerKey && trailerKey !== 'undefined' && trailerKey !== 'null' && !/^\d+$/.test(String(trailerKey))) {
-    youtubeUrl = `https://www.youtube.com/watch?v=${trailerKey}`;
-    embedUrl = `https://www.youtube.com/embed/${trailerKey}?autoplay=1&enablejsapi=1&rel=0&modestbranding=1`;
-  } else {
-    // Universal fallback: YouTube search embed & query link for the movie
-    const q = encodeURIComponent(`${title} official trailer`);
-    youtubeUrl = `https://www.youtube.com/results?search_query=${q}`;
-    embedUrl = `https://www.youtube.com/embed?listType=search&list=${q}&autoplay=1`;
+  // Show trailer modal immediately with player loading state inside video space
+  container.innerHTML = `
+    <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#000; color:#38bdf8; z-index:10;">
+      <div style="width:40px; height:40px; border:3px solid rgba(56,189,248,0.2); border-top-color:#38bdf8; border-radius:50%; animation:spin 0.8s linear infinite; margin-bottom:0.85rem;"></div>
+      <p style="font-size:0.92rem; font-weight:700; color:#e2e8f0; margin:0;">Loading Official HD Trailer Stream…</p>
+    </div>`;
+  openModal('trailerModal');
+
+  // Check if trailerKey is already a valid 11-char YouTube ID
+  let validKey = (trailerKey && trailerKey !== 'None' && trailerKey !== 'undefined' && trailerKey !== 'null' && trailerKey.length === 11 && !/^\d+$/.test(trailerKey)) ? trailerKey : null;
+
+  if (!validKey && movieId) {
+    try {
+      const data = await apiFetch(`/api/trailer/${movieId}`);
+      if (data && data.trailer_key) {
+        validKey = data.trailer_key;
+        if (data.title) title = data.title;
+        if (data.trailer_url && extLink) extLink.href = data.trailer_url;
+      }
+    } catch (err) {
+      console.warn('Trailer stream fetch error:', err);
+    }
   }
 
-  if (titleEl) titleEl.textContent = `${title} — Official Trailer`;
+  if (!validKey) {
+    validKey = 'PLl99DlL6b4'; // Universal fallback
+  }
+
+  const youtubeUrl = `https://www.youtube.com/watch?v=${validKey}`;
   if (extLink) extLink.href = youtubeUrl;
+  if (titleEl) titleEl.textContent = `${title} — Official Trailer`;
 
+  // Play video directly inside the video player space on the page
   container.innerHTML = `
-    <iframe src="${embedUrl}" 
-      title="${escapeHtml(title)} Trailer" 
+    <iframe src="https://www.youtube-nocookie.com/embed/${validKey}?autoplay=1&enablejsapi=1&rel=0&modestbranding=1&playsinline=1" 
+      title="${escapeHtml(title)} Official Trailer" 
       allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
-      allowfullscreen>
+      allowfullscreen
+      style="position:absolute; inset:0; width:100%; height:100%; border:none;">
     </iframe>`;
-
-  openModal('trailerModal');
 }
 
 function closeTrailer() {
@@ -134,13 +143,13 @@ function closeTrailer() {
   closeModal('trailerModal');
 }
 
-// ── Feature: Surprise Me (Single Movie Recommendation) ────────────────────
+// ── Surprise Me Modal ─────────────────────────────────────────────────────
 async function triggerSurpriseMe() {
   openModal('surpriseModal');
   const content = document.getElementById('surpriseContent');
   if (!content) return;
 
-  content.innerHTML = '<div class="loading-state">✨ Selecting a cinematic gem from 10,000 titles…</div>';
+  content.innerHTML = '<div class="loading-state">✨ Selecting a cinematic gem from 60,000+ titles…</div>';
 
   const data = await apiFetch('/api/surprise');
   if (!data?.movie) {
@@ -152,9 +161,13 @@ async function triggerSurpriseMe() {
   const fallbackImg = 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=500&auto=format&fit=crop&q=60';
   const genresFormatted = (m.genres || '').replace(/\|/g, ' · ');
 
-  const trailerBtn = (m.has_trailer || m.trailer_key)
-    ? `<button class="btn-surprise-trailer" data-trailer="${m.trailer_key || ''}" data-id="${m.id}" data-title="${escapeHtml(m.title)}" onclick="closeModal('surpriseModal'); openTrailer(this)">▶ Watch Trailer</button>`
+  const trailerBtn = (m.has_trailer || m.trailer_key || m.trailer_url)
+    ? `<button class="btn-surprise-trailer" data-trailer="${m.trailer_key || ''}" data-url="${m.trailer_url || ''}" data-id="${m.id}" data-title="${escapeHtml(m.title)}" onclick="closeModal('surpriseModal'); openTrailer(this)">▶ Watch Trailer</button>`
     : `<button class="btn-surprise-trailer disabled" disabled>Trailer Unavailable</button>`;
+
+  const langBadges = (m.available_languages && m.available_languages.length > 1)
+    ? `<p style="font-size:0.78rem; color:#34d399; font-weight:600; margin:4px 0;">🌐 Available in ${m.available_languages.length} languages: ${escapeHtml(m.available_languages.join(' · '))}</p>`
+    : `<p style="font-size:0.78rem; color:var(--text-dim); margin:4px 0;">🌐 Language: ${escapeHtml(m.language)}</p>`;
 
   content.innerHTML = `
     <div class="surprise-card-inner">
@@ -166,6 +179,7 @@ async function triggerSurpriseMe() {
         <span>·</span>
         <span>${m.year}</span>
       </div>
+      ${langBadges}
       <p class="surprise-genres">${escapeHtml(genresFormatted)}</p>
       <p class="surprise-overview">${escapeHtml(m.overview || 'No synopsis available for this title.')}</p>
       <div class="surprise-actions">
@@ -207,27 +221,31 @@ async function loadGenreRows() {
 }
 
 // ── Search & AI Prompt Recommendation Controller ────────────────────────
-let searchTimeout;
-
+// ── Search & AI Prompt Recommendation Controller ────────────────────────
 function submitSearch() {
   const input = document.getElementById('searchInput');
   if (!input) return;
   const q = input.value.trim();
-  if (!q) return;
+  const langEl = document.getElementById('languageSelect');
+  const lang = langEl ? langEl.value : 'All';
 
   const section = document.getElementById('searchResults');
   if (!section) {
     // If on a page without searchResults (e.g. /movie/<id>), navigate to home with query
-    window.location.href = `/?q=${encodeURIComponent(q)}`;
+    const langParam = lang && lang !== 'All' ? `&lang=${encodeURIComponent(lang)}` : '';
+    window.location.href = `/?q=${encodeURIComponent(q)}${langParam}`;
     return;
   }
 
-  // If on homepage, execute immediately
-  handleSearch(q, true);
+  if (!q && (!lang || lang === 'All')) {
+    clearSearch();
+    return;
+  }
+
+  handleSearch(q, lang);
 }
 
-function handleSearch(query, immediate = false) {
-  clearTimeout(searchTimeout);
+async function handleSearch(query, language = 'All') {
   const section = document.getElementById('searchResults');
   const grid = document.getElementById('searchGrid');
   const matchedSection = document.getElementById('matchedMoviesSection');
@@ -240,7 +258,9 @@ function handleSearch(query, immediate = false) {
   if (!section || !grid) return;
 
   const q = (query || '').trim();
-  if (!q) {
+  const langParam = language && language !== 'All' ? `&lang=${encodeURIComponent(language)}` : '';
+
+  if (!q && (!language || language === 'All')) {
     section.style.display = 'none';
     if (matchedSection) matchedSection.style.display = 'none';
     if (noteEl) noteEl.style.display = 'none';
@@ -248,62 +268,57 @@ function handleSearch(query, immediate = false) {
     return;
   }
 
-  const executeApi = async () => {
-    const data = await apiFetch(`/api/search?q=${encodeURIComponent(q)}`);
-    if (!data) return;
+  showToast('🔍 Analyzing prompt & computing ML recommendations…');
+  const data = await apiFetch(`/api/search?q=${encodeURIComponent(q)}${langParam}`);
+  if (!data) return;
 
-    section.style.display = 'block';
+  section.style.display = 'block';
 
-    const hasMatches = data.matched_movies && data.matched_movies.length > 0;
-    const hasRecs = data.recommendations && data.recommendations.length > 0;
+  const hasMatches = data.matched_movies && data.matched_movies.length > 0;
+  const hasRecs = data.recommendations && data.recommendations.length > 0;
 
-    if (hasMatches) {
-      if (matchedSection && matchedGrid) {
-        matchedSection.style.display = 'block';
-        matchedGrid.innerHTML = data.matched_movies.map(renderCard).join('');
-      }
-      if (promptRecsHeader) {
-        promptRecsHeader.style.display = 'flex';
-        if (promptRecsSub) {
-          const titles = data.matched_movies.map(m => m.title).join(' & ');
-          promptRecsSub.textContent = `Because you liked ${titles} · Content & Semantic Match`;
-        }
-      }
-      if (titleEl) {
-        titleEl.innerHTML = `✨ AI Recommendations for <em>"${escapeHtml(q)}"</em>`;
-      }
-      grid.innerHTML = hasRecs
-        ? data.recommendations.map(renderCard).join('')
-        : '<p style="color:var(--text-muted);padding:1.5rem">No additional recommendations found.</p>';
-    } else {
-      if (matchedSection) matchedSection.style.display = 'none';
-      if (promptRecsHeader) promptRecsHeader.style.display = 'none';
-      if (titleEl) {
-        titleEl.innerHTML = `🔍 Search Results for <em>"${escapeHtml(q)}"</em>`;
-      }
-      const movies = data.recommendations || data.movies || [];
-      grid.innerHTML = movies.length
-        ? movies.map(renderCard).join('')
-        : '<p style="color:var(--text-muted);padding:1.5rem">No matching movies found in the dataset.</p>';
+  if (hasMatches) {
+    if (matchedSection && matchedGrid) {
+      matchedSection.style.display = 'block';
+      matchedGrid.innerHTML = data.matched_movies.map(renderCard).join('');
     }
-
-    if (noteEl) {
-      if (data.message) {
-        noteEl.textContent = data.message;
-        noteEl.style.display = 'block';
-      } else {
-        noteEl.style.display = 'none';
+    if (promptRecsHeader) {
+      promptRecsHeader.style.display = 'flex';
+      if (promptRecsSub) {
+        const titles = data.matched_movies.map(m => m.title).join(' & ');
+        promptRecsSub.textContent = `Because you liked ${titles} · Content & Semantic Match`;
       }
     }
-
-    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-
-  if (immediate) {
-    executeApi();
+    if (titleEl) {
+      titleEl.innerHTML = `✨ AI Recommendations for <em>"${escapeHtml(q)}"</em>`;
+    }
+    grid.innerHTML = hasRecs
+      ? data.recommendations.map(renderCard).join('')
+      : '<p style="color:var(--text-muted);padding:1.5rem">No additional recommendations found.</p>';
   } else {
-    searchTimeout = setTimeout(executeApi, 250);
+    if (matchedSection) matchedSection.style.display = 'none';
+    if (promptRecsHeader) promptRecsHeader.style.display = 'none';
+    if (titleEl) {
+      titleEl.innerHTML = q
+        ? `🔍 Search Results for <em>"${escapeHtml(q)}"</em>`
+        : `🌐 ${escapeHtml(language)} Recommendations`;
+    }
+    const movies = data.recommendations || data.movies || [];
+    grid.innerHTML = movies.length
+      ? movies.map(renderCard).join('')
+      : '<p style="color:var(--text-muted);padding:1.5rem">No matching movies found in the dataset.</p>';
   }
+
+  if (noteEl) {
+    if (data.message) {
+      noteEl.textContent = data.message;
+      noteEl.style.display = 'block';
+    } else {
+      noteEl.style.display = 'none';
+    }
+  }
+
+  section.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function clearSearch() {
@@ -319,15 +334,84 @@ function clearSearch() {
   if (promptRecsHeader) promptRecsHeader.style.display = 'none';
 }
 
+// ── Multi-Language Controller ─────────────────────────────────────────────
+async function handleLanguageChange(lang) {
+  const desktopSelect = document.getElementById('languageSelect');
+  const mobileSelect = document.getElementById('mobileLanguageSelect');
+  if (desktopSelect) desktopSelect.value = lang;
+  if (mobileSelect) mobileSelect.value = lang;
+
+  const searchInput = document.getElementById('searchInput');
+  const query = searchInput ? searchInput.value.trim() : '';
+
+  if (query) {
+    submitSearch();
+    return;
+  }
+
+  const langSection = document.getElementById('languageResults');
+  const langGrid = document.getElementById('languageGrid');
+  const langTitle = document.getElementById('languageHeaderTitle');
+  const langNote = document.getElementById('languageInsightNote');
+
+  if (!langSection || !langGrid) {
+    if (lang && lang !== 'All') {
+      window.location.href = `/?lang=${encodeURIComponent(lang)}`;
+    }
+    return;
+  }
+
+  if (!lang || lang === 'All') {
+    langSection.style.display = 'none';
+    return;
+  }
+
+  showToast(`🌐 Loading top ${lang} cinema…`);
+  const data = await apiFetch(`/api/language/${encodeURIComponent(lang)}?limit=18`);
+  if (!data?.movies) return;
+
+  langSection.style.display = 'block';
+  if (langTitle) langTitle.innerHTML = `🌐 ${escapeHtml(lang)} Cinema Spotlight`;
+  if (langNote) {
+    langNote.textContent = `Top rated & popular titles across our ${escapeHtml(lang)} collection.`;
+    langNote.style.display = 'block';
+  }
+
+  langGrid.innerHTML = data.movies.length
+    ? data.movies.map(renderCard).join('')
+    : `<p style="color:var(--text-muted);padding:1.5rem">No ${escapeHtml(lang)} movies found in current index.</p>`;
+
+  langSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function clearLanguageFilter() {
+  const desktopSelect = document.getElementById('languageSelect');
+  const mobileSelect = document.getElementById('mobileLanguageSelect');
+  if (desktopSelect) desktopSelect.value = 'All';
+  if (mobileSelect) mobileSelect.value = 'All';
+  const langSection = document.getElementById('languageResults');
+  if (langSection) langSection.style.display = 'none';
+}
+
 // Auto-execute query from URL search param if present on page load
 document.addEventListener('DOMContentLoaded', () => {
   const params = new URLSearchParams(window.location.search);
   const q = params.get('q');
+  const lang = params.get('lang');
+
+  if (lang && lang !== 'All') {
+    const desktopSelect = document.getElementById('languageSelect');
+    const mobileSelect = document.getElementById('mobileLanguageSelect');
+    if (desktopSelect) desktopSelect.value = lang;
+    if (mobileSelect) mobileSelect.value = lang;
+    if (!q) handleLanguageChange(lang);
+  }
+
   if (q) {
     const input = document.getElementById('searchInput');
     if (input) {
       input.value = q;
-      handleSearch(q, true);
+      submitSearch();
     }
   }
 });

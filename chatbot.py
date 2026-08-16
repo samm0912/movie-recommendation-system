@@ -3,7 +3,8 @@ chatbot.py — AI & Conversational Recommender Engine (CineBot)
 Supports:
   1. Google Gemini API integration (via REST for zero-dependency reliability)
   2. Smart Local NLP Fallback Engine (Intent matching, Entity extraction, TF-IDF + Hybrid queries)
-  3. Structured response format with rich movie cards, trailers, ratings, and follow-up prompts
+  3. Multi-Language Intelligence (Telugu, Hindi, Tamil, Kannada, Malayalam, Bengali, Marathi, English)
+  4. Structured response format with rich movie cards, trailers, ratings, and follow-up prompts
 """
 
 import os
@@ -41,7 +42,7 @@ class MovieChatbotEngine:
                 "success": True,
                 "reply": "👋 Hi there! I'm **CineBot**, your AI movie concierge. Ask me for recommendations, search by mood or title, or say *'Surprise Me'*!",
                 "movies": [],
-                "suggested_prompts": ["🍿 Surprise Me", "🌌 Sci-Fi like Interstellar", "😂 Feel-Good Comedy", "🧠 How does ML work?"],
+                "suggested_prompts": ["🍿 Surprise Me", "🌌 Sci-Fi like Interstellar", "🎬 Telugu Blockbusters", "😂 Feel-Good Comedy"],
                 "mode": "greeting"
             }
 
@@ -70,13 +71,14 @@ class MovieChatbotEngine:
                 "title": m.get("title"),
                 "rating": m.get("rating"),
                 "year": m.get("year"),
+                "language": m.get("language"),
                 "genres": m.get("genres"),
                 "overview": (m.get("overview") or "")[:150]
             })
 
         system_instruction = (
             "You are CineBot, an intelligent, enthusiastic movie assistant integrated into a Movie Recommender System. "
-            "You have access to a database of 10,000 TMDB movies with ratings, genres, and trailers. "
+            "You have access to a database of 60,000+ international and Indian movies across Telugu, Hindi, Tamil, Kannada, Malayalam, Bengali, Marathi, English, and more. "
             "Always be helpful, cinematic, concise, and recommend relevant movies. "
             "Ground your recommendations in the provided movie database candidates when relevant. "
             "Format movie titles in **bold**."
@@ -102,7 +104,7 @@ class MovieChatbotEngine:
         if resp.status_code == 200:
             data = resp.json()
             reply_text = data["candidates"][0]["content"]["parts"][0]["text"]
-            
+
             # Enrich movie cards from dataset
             matched_movies = candidates[:5] if candidates else []
             return {
@@ -118,25 +120,25 @@ class MovieChatbotEngine:
     def _local_fallback_chat(self, message, history=None, user=None, context_movie_id=None):
         """
         High-precision local conversational NLP engine.
-        Parses intents, extracts movie titles & moods, and generates rich recommendations.
+        Parses intents, extracts movie titles, languages & moods, and generates rich recommendations.
         """
         q = message.strip()
         q_lower = q.lower()
-        cleaned = re.sub(r'[^a-zA-Z0-9\s]', ' ', q_lower)
 
         # ── INTENT A: Greetings ──────────────────────────────────────────────
         if re.match(r'^(hi|hello|hey|greetings|hola|sup|good\s+(morning|evening|afternoon))\b', q_lower):
             name = user.get("name") if user else "movie fan"
             return {
                 "success": True,
-                "reply": f"👋 Hello **{name}**! I'm **CineBot**, your AI movie assistant.\n\n"
+                "reply": f"👋 Hello **{name}**! I'm **CineBot**, your AI movie concierge powered by 60,000+ titles.\n\n"
                          f"You can ask me things like:\n"
                          f"• *'Recommend movies like Interstellar'*\n"
-                         f"• *'I want a mind-bending sci-fi thriller'*\n"
+                         f"• *'Show top Telugu thrillers'*\n"
+                         f"• *'I want a mind-bending sci-fi movie'*\n"
                          f"• *'Surprise me with a top-rated movie'*\n"
-                         f"• *'Show me trailers for The Dark Knight'*",
+                         f"• *'Watch trailer for Inception'*",
                 "movies": self.rec.get_trending(4),
-                "suggested_prompts": ["🍿 Surprise Me", "🌌 Movies like Interstellar", "🎭 Best Thrillers", "😂 Comedy Classics"],
+                "suggested_prompts": ["🍿 Surprise Me", "🌌 Movies like Interstellar", "🎬 Telugu Cinema", "🎭 Best Thrillers"],
                 "mode": "local_fallback"
             }
 
@@ -145,10 +147,10 @@ class MovieChatbotEngine:
             movie = self.rec.get_surprise_movie()
             if not movie:
                 movie = self.rec._get_top_rated(1)[0]
-            trailer_note = "🎬 Has official trailer available!" if movie.get("has_trailer") else ""
+            trailer_note = "🎬 Trailer stream available!" if movie.get("has_trailer") else ""
             return {
                 "success": True,
-                "reply": f"🎉 **Surprise Pick for You:** **{movie['title']}** ({movie['year']})\n\n"
+                "reply": f"🎉 **Surprise Pick for You:** **{movie['title']}** ({movie['year']}) · *{movie.get('language', 'Cinema')}*\n\n"
                          f"⭐ **Rating:** {movie['rating']}/10 · 🎭 **Genres:** {movie['genres'].replace('|', ', ')}\n\n"
                          f"📝 *{movie.get('overview', '')[:200]}...*\n\n{trailer_note}",
                 "movies": [movie],
@@ -162,8 +164,8 @@ class MovieChatbotEngine:
             return {
                 "success": True,
                 "reply": f"🧠 **How the Recommendation Engine Works:**\n\n"
-                         f"1. **TF-IDF Content Filtering**: Vectorizes movie titles, genres, and overviews across **{stats['total_movies']:,} movies** using **{stats['vocab_size']:,} text features**.\n"
-                         f"2. **Cosine Similarity**: Measures mathematical distance between movie vectors to find the closest thematic matches.\n"
+                         f"1. **TF-IDF Content Filtering**: Vectorizes titles, languages, genres, and overviews across **{stats['total_movies']:,} movies** using **{stats['vocab_size']:,} text features**.\n"
+                         f"2. **Cosine Similarity**: Measures mathematical distance between movie vectors to find the closest thematic matches in sub-milliseconds.\n"
                          f"3. **Collaborative Filtering**: Builds a dynamic User-Movie interaction matrix from ratings to find viewers with similar tastes.\n"
                          f"4. **Hybrid Blending**: Harmonizes content affinity and collaborative signals for optimal accuracy ({stats['accuracy_score']}).",
                 "movies": self.rec.get_trending(3),
@@ -171,24 +173,21 @@ class MovieChatbotEngine:
                 "mode": "local_fallback"
             }
 
-        # ── INTENT D: Trailer Inquiry ────────────────────────────────────────
-        if re.search(r'\b(trailer|watch trailer|play trailer|video)\b', q_lower):
-            # Extract title candidate
-            for _, row in self.rec.movies_df.iterrows():
-                t = str(row['title']).lower()
-                if len(t) > 3 and t in q_lower:
-                    m = self.rec.get_movie_by_id(int(row['id']))
-                    if m:
-                        return {
-                            "success": True,
-                            "reply": f"🎬 Here is the official trailer for **{m['title']}** ({m['year']}). Click **'▶ Trailer'** on the card below to launch the video player!",
-                            "movies": [m],
-                            "suggested_prompts": [f"🔍 Similar to {m['title']}", "🍿 Surprise Me"],
-                            "mode": "local_fallback"
-                        }
+        # ── INTENT D: Language Specific Inquiry ──────────────────────────────
+        for lang_dict in self.rec.get_languages():
+            l_name = lang_dict['name'].lower()
+            if l_name in q_lower:
+                lang_recs = self.rec.get_by_language(lang_dict['name'], 6)
+                if lang_recs:
+                    return {
+                        "success": True,
+                        "reply": f"🎬 Here are the top acclaimed **{lang_dict['name']}** movies from our database:",
+                        "movies": lang_recs,
+                        "suggested_prompts": ["🍿 Surprise Me", f"🔥 More {lang_dict['name']} Picks", "⭐ Best Rated"],
+                        "mode": "local_fallback"
+                    }
 
         # ── INTENT E: Specific Title Match & Similar Recommendations ────────
-        # (Handles queries like "Interstellar", "I liked Interstellar", "movies like Fight Club")
         prompt_res = self.rec.recommend_by_prompt(q, limit=8)
         matched = prompt_res.get("matched_movies", [])
         recs = prompt_res.get("recommendations", [])
@@ -196,15 +195,13 @@ class MovieChatbotEngine:
         if matched:
             target_movie = matched[0]
             other_matched = matched[1:] if len(matched) > 1 else []
-            # Combine target movie first, then similar recommendations
             all_cards = [target_movie] + other_matched + recs[:5]
-            
-            # Format high-accuracy AI response
+
             reply_lines = [
-                f"🚀 Found **{target_movie['title']}** ({target_movie['year']}) ⭐ {target_movie['rating']}/10.",
+                f"🚀 Found **{target_movie['title']}** ({target_movie['year']}) ⭐ {target_movie['rating']}/10 [{target_movie.get('language')}].",
                 f"\nBased on its theme (*{target_movie['genres'].replace('|', ', ')}*) and synopsis, here are the **top similar recommendations** calculated via TF-IDF cosine similarity & hybrid ranking:"
             ]
-            
+
             return {
                 "success": True,
                 "reply": "\n".join(reply_lines),
@@ -241,25 +238,23 @@ class MovieChatbotEngine:
 
         if matched_mood_key:
             label, genres = mood_map[matched_mood_key]
-            # Pool top rated movies in those genres
             candidates = []
             for g in genres:
                 candidates.extend(self.rec.get_by_genre(g, 4))
-            
-            # Deduplicate
+
             seen = set()
             unique_candidates = []
             for m in candidates:
                 if m["id"] not in seen:
                     seen.add(m["id"])
                     unique_candidates.append(m)
-            
+
             unique_candidates.sort(key=lambda x: (float(x.get("rating", 0)), float(x.get("popularity", 0))), reverse=True)
             top_mood_movies = unique_candidates[:6]
-            
+
             return {
                 "success": True,
-                "reply": f"✨ Here are the best **{label}** movies from our 10,000 TMDB collection tailored for your vibe:",
+                "reply": f"✨ Here are the best **{label}** movies from our 60,000+ collection tailored for your vibe:",
                 "movies": top_mood_movies,
                 "suggested_prompts": ["🍿 Surprise Me", "🎭 More in this genre", "🧠 Explain recommendations"],
                 "mode": "local_fallback"
@@ -270,7 +265,7 @@ class MovieChatbotEngine:
         if search_movies:
             return {
                 "success": True,
-                "reply": f"🎬 Here are the top matching titles from our 10,000 movies database for *'{q}'*:",
+                "reply": f"🎬 Here are the top matching titles from our 60,000+ movies database for *'{q}'*:",
                 "movies": search_movies[:6],
                 "suggested_prompts": ["🍿 Surprise Me", "🔥 What's Trending?", "⭐ Best Rated"],
                 "mode": "local_fallback"

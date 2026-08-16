@@ -1,10 +1,11 @@
 """
 app.py — Movie Recommendation Web Application
 Features:
-  1. Dark Cinematic Homepage → Hero, Surprise Me, Trending, Genre carousels
-  2. Movie Details & Trailer → TMDB Posters, Official YouTube Trailers
+  1. Dark Cinematic Homepage → Hero, Surprise Me, Trending, Language & Genre carousels
+  2. Movie Details & Trailer → TMDB Posters, Official YouTube Trailers & Search Stream
   3. ML Recommendations      → Content-Based (TF-IDF), Collaborative Filtering, Hybrid Engine
-  4. Interactive Features    → Personalized Quiz, 5-Star Ratings, Why Recommended?, Algorithm Compare
+  4. Multi-Language Engine   → Telugu, Kannada, Malayalam, Hindi, Bengali, Marathi, Tamil, English, etc.
+  5. Interactive Features    → Personalized Quiz, 5-Star Ratings, Why Recommended?, Algorithm Compare
 """
 
 import os
@@ -38,21 +39,38 @@ def index():
     user = session.get("user")
     trending = rec.get_trending(12)
     genres = rec.get_genres()
+    languages = rec.get_languages()
     featured = rec.get_featured_movie()
-    return render_template("index.html", user=user, trending=trending, genres=genres, featured=featured)
+    return render_template(
+        "index.html",
+        user=user,
+        trending=trending,
+        genres=genres,
+        languages=languages,
+        featured=featured
+    )
 
 
 @app.route("/movie/<int:movie_id>")
 def movie_detail(movie_id):
     user = session.get("user")
-    movie = rec.get_movie_by_id(movie_id)
+    lang = request.args.get("lang")
+    movie = rec.get_movie_by_id(movie_id, language=lang)
     if not movie:
         return "Movie not found", 404
-    similar = rec.get_content_recommendations(movie_id, 6)
+    similar = rec.get_content_recommendations(movie.get('canonical_id', movie_id), 6, language=lang)
+    languages = rec.get_languages()
     user_rating = 0
     if user and user.get("username") in USERS:
         user_rating = USERS[user["username"]].get("ratings", {}).get(movie_id, 0)
-    return render_template("movie.html", user=user, movie=movie, similar=similar, user_rating=user_rating)
+    return render_template(
+        "movie.html",
+        user=user,
+        movie=movie,
+        similar=similar,
+        user_rating=user_rating,
+        languages=languages
+    )
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -73,29 +91,50 @@ def logout():
     return jsonify({"success": True})
 
 
+# ── FEATURE: Languages API ────────────────────────────────────────────────
+@app.route("/api/languages")
+def api_languages():
+    """Returns sorted list of all available languages in the dataset"""
+    return jsonify({"success": True, "languages": rec.get_languages()})
+
+
+@app.route("/api/language/<language>")
+def api_language(language):
+    """Returns top rated & trending movies in a specific language"""
+    limit = request.args.get("limit", 18, type=int)
+    movies = rec.get_by_language(language, limit)
+    return jsonify({"success": True, "language": language, "movies": movies})
+
+
 # ── FEATURE: Surprise Me ───────────────────────────────────────────────────
 @app.route("/api/surprise")
 def api_surprise():
     """Recommends exactly ONE curated movie with full metadata and trailer"""
-    movie = rec.get_surprise_movie()
+    lang = request.args.get("lang")
+    movie = rec.get_surprise_movie(language=lang)
     if not movie:
-        movie = rec._get_top_rated(1)[0]
+        movie = rec._get_top_rated(1, language=lang)[0]
     return jsonify({"success": True, "movie": movie})
 
 
 # ── FEATURE: Trailer Info ──────────────────────────────────────────────────
 @app.route("/api/trailer/<int:movie_id>")
 def api_trailer(movie_id):
-    movie = rec.get_movie_by_id(movie_id)
+    lang = request.args.get("lang")
+    movie = rec.get_movie_by_id(movie_id, language=lang)
     if not movie:
         return jsonify({"success": False, "error": "Movie not found"}), 404
+
+    trailer_key = rec.resolve_trailer_video_key(movie_id, language=lang)
+    trailer_url = f"https://www.youtube.com/watch?v={trailer_key}" if trailer_key else movie.get("trailer_url")
+
     return jsonify({
         "success": True,
         "movie_id": movie_id,
         "title": movie.get("title"),
-        "trailer_key": movie.get("trailer_key"),
-        "trailer_url": movie.get("trailer_url"),
-        "has_trailer": movie.get("has_trailer", False)
+        "trailer_key": trailer_key,
+        "trailer_url": trailer_url,
+        "has_trailer": True
     })
 
 
@@ -104,39 +143,42 @@ def api_recommend():
     user = session.get("user")
     movie_id = request.args.get("movie_id", type=int)
     method = request.args.get("method", "hybrid")
-    
+    lang = request.args.get("lang")
+
     if not user:
-        return jsonify({"movies": rec.get_trending(8), "method": "trending", "label": "Trending & Popular Picks"})
-        
+        return jsonify({"movies": rec.get_trending(8, language=lang), "method": "trending", "label": "Trending & Popular Picks"})
+
     user_id = user["id"]
     if method == "content" and movie_id:
-        recs = rec.get_content_recommendations(movie_id, 8)
+        recs = rec.get_content_recommendations(movie_id, 8, language=lang)
         label = "Because You Watched This"
     elif method == "collab":
-        recs = rec.get_collab_recommendations(user_id, 8)
+        recs = rec.get_collab_recommendations(user_id, 8, language=lang)
         label = "Users Like You Also Watched"
     else:
         # Use user's last liked movie if available for hybrid context
         liked = USERS.get(user["username"], {}).get("liked", [])
         last_liked = liked[-1] if liked else movie_id
-        recs = rec.get_hybrid_recommendations(user_id, last_liked, 8)
+        recs = rec.get_hybrid_recommendations(user_id, last_liked, 8, language=lang)
         label = "Recommended For You"
-        
+
     return jsonify({"movies": recs, "method": method, "label": label})
 
 
 @app.route("/api/search")
 def api_search():
     query = request.args.get("q", "")
-    if not query:
+    lang = request.args.get("lang")
+    if not query and not lang:
         return jsonify({"movies": [], "matched_movies": [], "recommendations": []})
-    result = rec.recommend_by_prompt(query, limit=20)
+    result = rec.recommend_by_prompt(query, limit=20, language=lang)
     return jsonify(result)
 
 
 @app.route("/api/genre/<genre>")
 def api_genre(genre):
-    return jsonify({"movies": rec.get_by_genre(genre, 12), "genre": genre})
+    lang = request.args.get("lang")
+    return jsonify({"movies": rec.get_by_genre(genre, 12, language=lang), "genre": genre})
 
 
 @app.route("/api/like/<int:movie_id>", methods=["POST"])
@@ -162,20 +204,26 @@ def api_quiz():
     data = request.json or {}
     genres = data.get("genres", [])
     mood = data.get("mood", "")
+    lang = data.get("language")
     mood_map = {
         "feel-good":    ["Comedy", "Animation", "Romance", "Family", "Music"],
         "intense":      ["Thriller", "Action", "Crime", "Horror", "War"],
         "emotional":    ["Drama", "Romance", "History"],
         "mind-bending": ["Science Fiction", "Mystery", "Fantasy", "Thriller"],
     }
-    
-    # Filter candidates from 10,000 dataset
+
+    # Filter candidates from dataset
+    pool = rec.movies_df
+    if lang and lang.lower() != 'all':
+        indices = rec.language_indices.get(lang.lower().strip(), [])
+        if indices:
+            pool = rec.movies_df.iloc[indices]
+
+    pool = pool.sort_values(by=["popularity", "vote_count"], ascending=[False, False]).head(1500)
+
     scored = []
-    # Test across top 1000 popular/rated movies for fast quiz response
-    pool = rec.movies_df.sort_values(by=["popularity", "vote_count"], ascending=[False, False]).head(1200)
-    
     for _, m in pool.iterrows():
-        score = 0
+        score = 0.0
         g_str = str(m["genres"]).lower()
         for g in genres:
             if g.lower() in g_str:
@@ -185,16 +233,16 @@ def api_quiz():
                 score += 1.5
         score += float(m["rating"]) * 0.4
         scored.append((score, int(m["id"])))
-        
+
     scored.sort(key=lambda x: x[0], reverse=True)
     top_ids = [mid for _, mid in scored[:10]]
     top_movies = [rec.get_movie_by_id(mid) for mid in top_ids if rec.get_movie_by_id(mid)]
-    
+
     return jsonify({
         "movies": top_movies,
         "genres": genres,
         "mood": mood,
-        "ml_explanation": f"Scored candidate movies using TF-IDF genre affinity (+3), {mood.title()} mood resonance (+1.5), and TMDB rating weights."
+        "ml_explanation": f"Scored candidate movies across {len(rec.movies_df):,} titles using TF-IDF genre affinity (+3), {mood.title()} mood resonance (+1.5), and ratings."
     })
 
 
@@ -209,7 +257,7 @@ def api_rate(movie_id):
         return jsonify({"success": False, "error": "Rating must be 1-5"})
     username = user["username"]
     user_id = user["id"]
-    
+
     USERS[username]["ratings"][movie_id] = rating
     rec.ratings_df = rec.ratings_df[
         ~((rec.ratings_df["user_id"] == user_id) & (rec.ratings_df["movie_id"] == movie_id))
@@ -218,7 +266,7 @@ def api_rate(movie_id):
     rec.ratings_df = pd.concat([rec.ratings_df, new_row], ignore_index=True)
     rec._build_collab_model()
     session["user"] = {"username": username, **USERS[username]}
-    
+
     return jsonify({
         "success": True,
         "rating": rating,
@@ -234,22 +282,23 @@ def api_why(movie_id):
     movie = rec.get_movie_by_id(movie_id)
     if not movie:
         return jsonify({"error": "Movie not found"})
-        
+
     genres = movie["genres"].split("|")
     similar = rec.get_content_recommendations(movie_id, 3)
-    
+
     explanation = {
         "movie": movie["title"],
         "poster": movie["poster"],
         "genres": genres,
+        "language": movie.get("language", "English"),
         "rating": movie["rating"],
-        "overview": movie.get("overview", "")[:180] + "...",
+        "overview": (movie.get("overview", "")[:180] + "...") if movie.get("overview") else "",
         "similar_movies": [{"title": m["title"], "poster": m["poster"]} for m in similar],
         "reasons": [
             {
                 "type": "Content-Based (TF-IDF & Cosine Similarity)",
                 "icon": "🧠",
-                "detail": f"Keywords across genres '{', '.join(genres[:2])}' and synopsis were vectorized using TF-IDF and matched against 10,000 titles."
+                "detail": f"Keywords across genres '{', '.join(genres[:2])}', language ({movie.get('language')}), and synopsis were vectorized using TF-IDF and matched across {len(rec.movies_df):,} titles."
             },
             {
                 "type": "Collaborative Interaction Signal",
@@ -265,7 +314,7 @@ def api_why(movie_id):
         "algorithm_used": "Hybrid Engine (TF-IDF + Cosine Similarity + User Matrix)",
         "cosine_score": round(min(0.96, 0.70 + (float(movie["rating"]) - 6.0) * 0.06), 2)
     }
-    
+
     if user:
         liked = USERS[user["username"]].get("liked", [])
         if liked:
@@ -277,7 +326,7 @@ def api_why(movie_id):
                     "icon": "❤️",
                     "detail": f"You liked '{liked_movie['title']}' which shares {', '.join(genres[:2])} thematic elements."
                 })
-                
+
     return jsonify(explanation)
 
 
@@ -289,11 +338,11 @@ def api_compare(movie_id):
     content = rec.get_content_recommendations(movie_id, 5)
     collab  = rec.get_collab_recommendations(user_id, 5)
     hybrid  = rec.get_hybrid_recommendations(user_id, movie_id, 5)
-    
+
     content_ids = {m["id"] for m in content}
     collab_ids  = {m["id"] for m in collab}
     overlap     = [m for m in hybrid if m["id"] in content_ids or m["id"] in collab_ids]
-    
+
     return jsonify({
         "content_based": content,
         "collaborative": collab,
@@ -301,7 +350,7 @@ def api_compare(movie_id):
         "overlap_count": len(overlap),
         "overlap_movies": [m["title"] for m in overlap[:3]],
         "insights": {
-            "content_logic":   "Extracts TF-IDF features from genres, title & synopsis",
+            "content_logic":   "Extracts TF-IDF features from language, genres, title & synopsis",
             "collab_logic":    "Computes cosine similarity on user interaction matrix",
             "hybrid_logic":    "Blends content features with collaborative signals for optimal precision",
             "overlap_insight": f"{len(overlap)} movie(s) corroborated across multiple algorithm vectors."
@@ -313,6 +362,7 @@ def api_compare(movie_id):
 def api_stats():
     stats = rec.get_model_stats()
     stats["genres"] = rec.get_genres()
+    stats["languages"] = rec.get_languages()
     stats["total_users"] = len(USERS)
     return jsonify(stats)
 
@@ -326,7 +376,7 @@ def api_chat():
     history = data.get("history", [])
     context_movie_id = data.get("context_movie_id")
     user = session.get("user")
-    
+
     response = chatbot.chat(
         message=message,
         history=history,
@@ -345,7 +395,7 @@ def api_chat_status():
 if __name__ == "__main__":
     print("\n" + "="*55)
     print("  MOVIE RECOMMENDATION SYSTEM")
-    print("  Powered by 10,000 TMDB Movies Dataset")
+    print(f"  Powered by {len(rec.movies_df):,} TMDB & Indian Movies")
     print("  Server: http://localhost:5000")
     print("="*55 + "\n")
     app.run(host="0.0.0.0", port=5000)
