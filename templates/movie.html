@@ -87,16 +87,20 @@
 
       <!-- Profile / Sign In -->
       {% if user %}
-        <div class="profile-capsule">
+        <div class="profile-capsule" onclick="openProfileModal()" title="View My Profile & Liked Movies">
           <div class="profile-avatar-pill">
             <span class="avatar-letter">{{ user.name[0] }}</span>
             <span class="status-indicator"></span>
           </div>
-          <div class="profile-dropdown-menu">
+          <div class="profile-dropdown-menu" onclick="event.stopPropagation()">
             <div class="dropdown-header">
               <p class="dropdown-user-name">{{ user.name }}</p>
               <span class="dropdown-user-role">Taste Profile Active</span>
             </div>
+            <button onclick="openProfileModal()" class="dropdown-profile-btn">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+              My Profile &amp; Liked
+            </button>
             <button onclick="logout()" class="dropdown-logout-btn">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
               Sign Out
@@ -200,7 +204,7 @@
         <img src="{{ m.poster }}" alt="{{ m.title }}" loading="lazy"
           onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=500&auto=format&fit=crop&q=60'">
         <div class="card-badges">
-          <span class="card-badge-rating">⭐ {{ m.rating }}</span>
+          <span class="card-badge-rating">⭐ {{ m.rating }}/10</span>
           {% if m.has_trailer %}<span class="card-badge-trailer">🎬</span>{% endif %}
         </div>
         <div class="card-overlay">
@@ -213,7 +217,7 @@
           </div>
           <div class="card-info-bottom">
             <p class="card-title">{{ m.title }}</p>
-            <p class="card-meta"><span class="meta-star">⭐ {{ m.rating }}</span> · {{ m.year }}</p>
+            <p class="card-meta"><span class="meta-star">⭐ {{ m.rating }}/10</span> · {{ m.year }}</p>
             <p class="card-genres">{{ m.genres.replace('|', ' · ')[:30] }}</p>
           </div>
         </div>
@@ -290,6 +294,70 @@
 </div>
 
 <!-- ════════════════════════════════════════════════
+     MODAL: USER PROFILE & LIKED MOVIES
+════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="profileModal" onclick="closeModal('profileModal')">
+  <div class="modal-box profile-box" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeModal('profileModal')">✕</button>
+    <div class="profile-modal-header">
+      <div class="profile-header-avatar">
+        <span class="profile-avatar-char" id="profileAvatarChar">{% if user %}{{ user.name[0] }}{% else %}U{% endif %}</span>
+      </div>
+      <div class="profile-header-details">
+        <div class="profile-name-row">
+          <h2 class="profile-display-name" id="profileDisplayName">{% if user %}{{ user.name }}{% else %}User Profile{% endif %}</h2>
+          <span class="profile-verified-badge">Taste Profile Active</span>
+        </div>
+        <p class="profile-username" id="profileUsername">@{% if user %}{{ user.username }}{% else %}user{% endif %}</p>
+      </div>
+    </div>
+
+    <div class="profile-stats-bar">
+      <div class="profile-stat-item active" id="statLikedTab" onclick="switchProfileTab('liked')" title="View Liked Watchlist">
+        <span class="profile-stat-count" id="profileLikedCount">0</span>
+        <span class="profile-stat-lbl">❤️ Liked Movies</span>
+      </div>
+      <div class="profile-stat-item" id="statRatedTab" onclick="switchProfileTab('rated')" title="View Rated Movies and Re-change Ratings">
+        <span class="profile-stat-count" id="profileRatingsCount">{% if user and user.ratings %}{{ user.ratings|length }}{% else %}0{% endif %}</span>
+        <span class="profile-stat-lbl">⭐ Rated Movies</span>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="profile-nav-tabs">
+      <button class="profile-tab-btn active" id="tabBtnLiked" onclick="switchProfileTab('liked')">
+        ❤️ Liked Movies (<span id="tabCountLiked">0</span>)
+      </button>
+      <button class="profile-tab-btn" id="tabBtnRated" onclick="switchProfileTab('rated')">
+        ⭐ Rated Movies (<span id="tabCountRated">{% if user and user.ratings %}{{ user.ratings|length }}{% else %}0{% endif %}</span>)
+      </button>
+    </div>
+
+    <!-- Liked Movies Tab Content -->
+    <div class="profile-tab-content active" id="profileLikedTabContent">
+      <div class="profile-section-heading">
+        <h3 class="profile-liked-title">❤️ My Liked Movies Watchlist</h3>
+        <span class="profile-liked-subtitle">Saved titles customized to your taste</span>
+      </div>
+      <div class="profile-liked-container" id="profileLikedContainer">
+        <div class="loading-state">Loading your liked movies…</div>
+      </div>
+    </div>
+
+    <!-- Rated Movies Tab Content with Re-rate Options -->
+    <div class="profile-tab-content" id="profileRatedTabContent" style="display:none;">
+      <div class="profile-section-heading">
+        <h3 class="profile-liked-title">⭐ My Rated Movies & Taste Model</h3>
+        <span class="profile-liked-subtitle">View your rated films and click any star to re-change your rating anytime</span>
+      </div>
+      <div class="profile-rated-container" id="profileRatedContainer">
+        <div class="loading-state">Loading your rated movies…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════
      CINEBOT AI FLOATING LAUNCHER & CONVERSATION DRAWER
 ════════════════════════════════════════════════ -->
 <div class="cinebot-fab-wrap" id="cinebotFabWrap">
@@ -320,7 +388,7 @@
           <span class="cinebot-title">CineBot AI</span>
           <span class="cinebot-tag" id="cinebotModelTag">Hybrid ML</span>
         </div>
-        <p class="cinebot-sub">10K Movies · TF-IDF & TMDB</p>
+        <p class="cinebot-sub">60,000+ Movies · Interactive Companion</p>
       </div>
     </div>
     <div class="cinebot-header-actions">

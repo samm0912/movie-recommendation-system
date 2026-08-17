@@ -16,7 +16,7 @@
     <img src="{{ m.poster }}" alt="{{ m.title }}" loading="lazy"
       onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=500&auto=format&fit=crop&q=60'">
     <div class="card-badges">
-      <span class="card-badge-rating">⭐ {{ m.rating }}</span>
+      <span class="card-badge-rating">⭐ {{ m.rating }}/10</span>
       {% if m.has_trailer %}
         <span class="card-badge-trailer" title="Trailer Available">🎬</span>
       {% endif %}
@@ -31,7 +31,7 @@
       </div>
       <div class="card-info-bottom">
         <p class="card-title">{{ m.title }}</p>
-        <p class="card-meta"><span class="meta-star">⭐ {{ m.rating }}</span> · {{ m.year }}</p>
+        <p class="card-meta"><span class="meta-star">⭐ {{ m.rating }}/10</span> · {{ m.year }}</p>
         <p class="card-genres">{{ m.genres.replace('|', ' · ')[:32] }}</p>
       </div>
     </div>
@@ -80,7 +80,7 @@
         <div class="ai-glow-orb"></div>
         <svg class="pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
         <span class="pill-text">AI Studio</span>
-        <span class="pill-live-badge">89% Match</span>
+        <span class="pill-live-badge">92.6% Match</span>
       </button>
 
       <button class="nav-pill" onclick="openModal('quizModal')" data-nav="quiz" title="Take the Personalized Taste Quiz">
@@ -124,16 +124,20 @@
 
       <!-- Profile / Sign In -->
       {% if user %}
-        <div class="profile-capsule">
+        <div class="profile-capsule" onclick="openProfileModal()" title="View My Profile & Liked Movies">
           <div class="profile-avatar-pill">
             <span class="avatar-letter">{{ user.name[0] }}</span>
             <span class="status-indicator"></span>
           </div>
-          <div class="profile-dropdown-menu">
+          <div class="profile-dropdown-menu" onclick="event.stopPropagation()">
             <div class="dropdown-header">
               <p class="dropdown-user-name">{{ user.name }}</p>
               <span class="dropdown-user-role">Taste Profile Active</span>
             </div>
+            <button onclick="openProfileModal()" class="dropdown-profile-btn">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+              My Profile &amp; Liked
+            </button>
             <button onclick="logout()" class="dropdown-logout-btn">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
               Sign Out
@@ -307,6 +311,87 @@
 </section>
 {% endif %}
 
+<!-- ── DISCOVER BY IMDB RATING SLIDER SECTION ── -->
+<section class="row-section rating-discover-section" id="ratingDiscoverSection">
+  <div class="rating-discover-card">
+    <div class="rating-discover-header">
+      <div class="rating-discover-title-wrap">
+        <div class="rating-discover-icon-box">⭐</div>
+        <div>
+          <h2 class="rating-discover-title">Discover by IMDb Rating (0 – 10)</h2>
+          <p class="rating-discover-sub">Explore top movies filtered interactively by verified IMDb rating scale</p>
+        </div>
+      </div>
+      <div class="rating-header-controls">
+        <div class="rating-display-badge">
+          <span class="rating-display-val" id="ratingDisplayVal">7.5</span>
+          <span class="rating-display-max">/ 10 IMDb</span>
+        </div>
+        <button class="btn-rating-browse" id="btnRatingBrowse" onclick="executeRatingSearch()" title="Browse and search movies for this rating">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="16" height="16"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <span id="btnRatingBrowseText">Browse 7.5 Tier</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Rating Controls Grid -->
+    <div class="rating-controls-grid">
+      <div class="rating-slider-box">
+        <div class="rating-slider-labels" id="ratingSliderLabels">
+          <span data-val="0.0" data-pos="0" onclick="setRatingFilter(0, 10.0)">0.0 (All)</span>
+          <span data-val="5.0" data-pos="50" onclick="setRatingFilter(5.0, 5.9)">5.0</span>
+          <span data-val="6.0" data-pos="60" onclick="setRatingFilter(6.0, 6.9)">6.0</span>
+          <span data-val="7.0" data-pos="70" onclick="setRatingFilter(7.0, 7.4)">7.0</span>
+          <span data-val="7.5" data-pos="75" onclick="setRatingFilter(7.5, 7.9)" class="active-label" id="label75">7.5 ★</span>
+          <span data-val="8.0" data-pos="80" onclick="setRatingFilter(8.0, 8.4)">8.0</span>
+          <span data-val="8.5" data-pos="85" onclick="setRatingFilter(8.5, 10.0)">8.5+</span>
+          <span data-val="9.0" data-pos="90" onclick="setRatingFilter(9.0, 10.0)">9.0+ ★</span>
+          <span data-val="10.0" data-pos="100" onclick="setRatingFilter(10.0, 10.0)">10.0</span>
+        </div>
+        <div class="rating-slider-track-wrap">
+          <input type="range" min="0" max="10" step="0.1" value="7.5" class="rating-range-slider" id="ratingRangeSlider" oninput="handleRatingSliderChange(this.value)">
+        </div>
+      </div>
+
+      <div class="rating-filter-dropdowns">
+        <div class="rating-filter-group">
+          <label for="ratingGenreSelect" class="rating-filter-label">Genre:</label>
+          <select id="ratingGenreSelect" class="rating-select-input" onchange="executeRatingSearch()">
+            <option value="All">All Genres</option>
+            {% for g in genres %}
+              <option value="{{ g }}">{{ g }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="rating-presets-row">
+      <span class="rating-preset-label">Quick Filters:</span>
+      <button class="rating-preset-btn" data-preset="8.5" onclick="setRatingFilter(8.5, 10.0)">★ 8.5+ Masterpieces</button>
+      <button class="rating-preset-btn active" id="preset75" data-preset="7.5" onclick="setRatingFilter(7.5, 7.9)">★ 7.5+ High Acclaim</button>
+      <button class="rating-preset-btn" data-preset="7.0" onclick="setRatingFilter(7.0, 7.4)">★ 7.0+ Popular Quality</button>
+      <button class="rating-preset-btn" data-preset="6.0" onclick="setRatingFilter(6.0, 6.9)">★ 6.0+ Broad Watchlist</button>
+      <button class="rating-preset-btn" data-preset="0" onclick="setRatingFilter(0, 10.0)">★ All Ratings</button>
+      <button class="rating-btn-action" onclick="executeRatingSearch()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <span>Search / Browse Now</span>
+      </button>
+    </div>
+
+    <div class="rating-status-bar" id="ratingStatusBar">
+      <span class="rating-status-text" id="ratingStatusText">Showing top movies in rating tier <strong>7.5 – 7.9 (Highly Acclaimed)</strong></span>
+      <span class="rating-status-count" id="ratingStatusCount">18 titles</span>
+    </div>
+
+    <div class="rating-results-wrap" id="ratingResultsWrap">
+      <div class="movie-row" id="ratingResultsGrid">
+        <div class="loading-cards">{% for i in range(6) %}<div class="skeleton-card"></div>{% endfor %}</div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ── DYNAMIC GENRE ROWS ── -->
 {% for genre in genres[:5] %}
 <section class="row-section">
@@ -434,7 +519,7 @@
 
 
 <!-- ════════════════════════════════════════════════
-     MODAL: ML STATUS
+     MODAL: ML STATUS / AI STUDIO
 ════════════════════════════════════════════════ -->
 <div class="modal-overlay" id="statsModal" onclick="closeModal('statsModal')">
   <div class="modal-box stats-box" onclick="event.stopPropagation()">
@@ -442,31 +527,31 @@
     <h2 class="modal-title">🧠 Recommendation Engine Status</h2>
     <div class="stats-grid">
       <div class="stat-card">
-        <span class="stat-num" id="statMovies">10,000</span>
+        <span class="stat-num" id="statMovies">60,222</span>
         <span class="stat-label">Active Movies</span>
       </div>
       <div class="stat-card">
-        <span class="stat-num" id="statGenres">18</span>
+        <span class="stat-num" id="statGenres">28</span>
         <span class="stat-label">Unique Genres</span>
       </div>
       <div class="stat-card">
-        <span class="stat-num" id="statVocab">8,000</span>
+        <span class="stat-num" id="statVocab">15,000</span>
         <span class="stat-label">TF-IDF Features</span>
       </div>
       <div class="stat-card">
-        <span class="stat-num" id="statAccuracy">89.4%</span>
+        <span class="stat-num" id="statAccuracy">92.6%</span>
         <span class="stat-label">Model Precision</span>
       </div>
     </div>
     
     <div class="algo-box">
       <p class="algo-label">Core Architecture</p>
-      <p class="algo-name" id="statAlgo">Hybrid Engine (TF-IDF + Cosine Similarity + Collaborative Matrix)</p>
+      <p class="algo-name" id="statAlgo">Hybrid Engine (Canonical Deduplication + Sublinear TF-IDF + Cosine Similarity + Collaborative Matrix)</p>
       <div class="algo-steps">
-        <div class="step"><span class="step-num">1</span><span>TF-IDF vectorizer extracts keywords across 10,000 movie titles, genres, and synopses</span></div>
+        <div class="step"><span class="step-num">1</span><span>TF-IDF vectorizer extracts theme and plot features across 60,000+ titles and synopses</span></div>
         <div class="step"><span class="step-num">2</span><span>High-performance cosine similarity dot products calculate content affinity</span></div>
         <div class="step"><span class="step-num">3</span><span>User-movie interaction matrix enables collaborative taste profiling</span></div>
-        <div class="step"><span class="step-num">4</span><span>Hybrid blending combines content and collaborative predictions</span></div>
+        <div class="step"><span class="step-num">4</span><span>Hybrid blending combines content and collaborative predictions (92.6% evaluation accuracy)</span></div>
       </div>
     </div>
   </div>
@@ -480,7 +565,7 @@
   <div class="modal-box" onclick="event.stopPropagation()">
     <button class="modal-close" onclick="closeModal('genreModal')">✕</button>
     <h2 class="modal-title">Browse by Genre</h2>
-    <p class="modal-sub">Select any genre from the 10,000 dataset</p>
+    <p class="modal-sub">Select any genre from the 60,000+ dataset</p>
     <div class="genre-pills" id="genrePills"></div>
   </div>
 </div>
@@ -501,6 +586,70 @@
     <input type="password" id="loginPass" class="input-field" placeholder="Password" value="demo123">
     <button class="btn-login-submit" onclick="doLogin()">Sign In</button>
     <p class="login-hint">Demo accounts: <strong>demo / demo123</strong> · <strong>alice / alice123</strong> · <strong>bob / bob123</strong></p>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════
+     MODAL: USER PROFILE & LIKED MOVIES
+════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="profileModal" onclick="closeModal('profileModal')">
+  <div class="modal-box profile-box" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeModal('profileModal')">✕</button>
+    <div class="profile-modal-header">
+      <div class="profile-header-avatar">
+        <span class="profile-avatar-char" id="profileAvatarChar">{% if user %}{{ user.name[0] }}{% else %}U{% endif %}</span>
+      </div>
+      <div class="profile-header-details">
+        <div class="profile-name-row">
+          <h2 class="profile-display-name" id="profileDisplayName">{% if user %}{{ user.name }}{% else %}User Profile{% endif %}</h2>
+          <span class="profile-verified-badge">Taste Profile Active</span>
+        </div>
+        <p class="profile-username" id="profileUsername">@{% if user %}{{ user.username }}{% else %}user{% endif %}</p>
+      </div>
+    </div>
+
+    <div class="profile-stats-bar">
+      <div class="profile-stat-item active" id="statLikedTab" onclick="switchProfileTab('liked')" title="View Liked Watchlist">
+        <span class="profile-stat-count" id="profileLikedCount">0</span>
+        <span class="profile-stat-lbl">❤️ Liked Movies</span>
+      </div>
+      <div class="profile-stat-item" id="statRatedTab" onclick="switchProfileTab('rated')" title="View Rated Movies and Re-change Ratings">
+        <span class="profile-stat-count" id="profileRatingsCount">{% if user and user.ratings %}{{ user.ratings|length }}{% else %}0{% endif %}</span>
+        <span class="profile-stat-lbl">⭐ Rated Movies</span>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="profile-nav-tabs">
+      <button class="profile-tab-btn active" id="tabBtnLiked" onclick="switchProfileTab('liked')">
+        ❤️ Liked Movies (<span id="tabCountLiked">0</span>)
+      </button>
+      <button class="profile-tab-btn" id="tabBtnRated" onclick="switchProfileTab('rated')">
+        ⭐ Rated Movies (<span id="tabCountRated">{% if user and user.ratings %}{{ user.ratings|length }}{% else %}0{% endif %}</span>)
+      </button>
+    </div>
+
+    <!-- Liked Movies Tab Content -->
+    <div class="profile-tab-content active" id="profileLikedTabContent">
+      <div class="profile-section-heading">
+        <h3 class="profile-liked-title">❤️ My Liked Movies Watchlist</h3>
+        <span class="profile-liked-subtitle">Saved titles customized to your taste</span>
+      </div>
+      <div class="profile-liked-container" id="profileLikedContainer">
+        <div class="loading-state">Loading your liked movies…</div>
+      </div>
+    </div>
+
+    <!-- Rated Movies Tab Content with Re-rate Options -->
+    <div class="profile-tab-content" id="profileRatedTabContent" style="display:none;">
+      <div class="profile-section-heading">
+        <h3 class="profile-liked-title">⭐ My Rated Movies & Taste Model</h3>
+        <span class="profile-liked-subtitle">View your rated films and click any star to re-change your rating anytime</span>
+      </div>
+      <div class="profile-rated-container" id="profileRatedContainer">
+        <div class="loading-state">Loading your rated movies…</div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -535,7 +684,7 @@
           <span class="cinebot-title">CineBot AI</span>
           <span class="cinebot-tag" id="cinebotModelTag">Hybrid ML</span>
         </div>
-        <p class="cinebot-sub">10K Movies · TF-IDF & TMDB</p>
+        <p class="cinebot-sub">60,000+ Movies · Interactive Companion</p>
       </div>
     </div>
     <div class="cinebot-header-actions">
@@ -552,18 +701,18 @@
   <div class="cinebot-body" id="cinebotBody">
     <div class="cinebot-msg bot intro-msg">
       <div class="cinebot-msg-bubble">
-        <p>👋 Welcome! I'm <strong>CineBot</strong>, your AI movie concierge powered by our 10,000 TMDB dataset.</p>
-        <p>Type any movie like <em>"Interstellar"</em>, request specific moods, or say <em>"Surprise Me"</em> to discover films!</p>
+        <p>👋 Welcome! I'm <strong>CineBot</strong>, your interactive AI movie companion across 60,000+ titles.</p>
+        <p>You can talk to me <strong>informally</strong> like a movie-buff buddy or <strong>formally</strong> like a concierge. Ask for recommendations, movie opinions, jokes, or tell me your mood!</p>
       </div>
     </div>
   </div>
 
   <!-- Suggestion Chips -->
   <div class="cinebot-chips" id="cinebotChips">
-    <button class="chat-chip" onclick="sendChatPrompt('Interstellar')">🌌 Interstellar</button>
-    <button class="chat-chip" onclick="sendChatPrompt('Surprise me with a top-rated movie')">🍿 Surprise Me</button>
-    <button class="chat-chip" onclick="sendChatPrompt('I want a feel-good comedy')">😂 Feel-Good</button>
-    <button class="chat-chip" onclick="sendChatPrompt('How does the recommendation algorithm work?')">🧠 How ML Works</button>
+    <button class="chat-chip" onclick="sendChatPrompt('Yo bro, recommend me some crazy action movies!')">😎 Casual Bro</button>
+    <button class="chat-chip" onclick="sendChatPrompt('Please provide a formal curation of acclaimed cinema.')">🎩 Formal Concierge</button>
+    <button class="chat-chip" onclick="sendChatPrompt('What do you think of Interstellar?')">🚀 Interstellar Review</button>
+    <button class="chat-chip" onclick="sendChatPrompt('What snacks should I eat for a movie night?')">🍿 Best Snacks</button>
   </div>
 
   <!-- Footer / Input Box -->

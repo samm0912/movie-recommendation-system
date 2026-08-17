@@ -15,6 +15,7 @@ import json
 import random
 import re
 import urllib.parse
+import difflib
 import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -64,6 +65,425 @@ PRIORITY_LANGUAGES = [
     'French', 'Japanese', 'Korean', 'Italian',
     'German', 'Chinese'
 ]
+
+# ── FUZZY & MISSPELLING ALIAS MAPPINGS ───────────────────────────────────────
+LANGUAGE_ALIASES = {
+    'telgu': 'Telugu', 'telegu': 'Telugu', 'tollywood': 'Telugu', 'telug': 'Telugu',
+    'hndi': 'Hindi', 'hind': 'Hindi', 'bollywood': 'Hindi', 'hindee': 'Hindi',
+    'taml': 'Tamil', 'tamizh': 'Tamil', 'kollywood': 'Tamil', 'thamil': 'Tamil',
+    'kanada': 'Kannada', 'kannad': 'Kannada', 'sandalwood': 'Kannada', 'kannda': 'Kannada',
+    'malayalm': 'Malayalam', 'malyalam': 'Malayalam', 'mallu': 'Malayalam', 'mollywood': 'Malayalam', 'malyalm': 'Malayalam', 'malayalamm': 'Malayalam',
+    'bengli': 'Bengali', 'bangla': 'Bengali', 'bangali': 'Bengali',
+    'mrathi': 'Marathi', 'marati': 'Marathi',
+    'eng': 'English', 'englsih': 'English', 'engish': 'English', 'hollywood': 'English', 'englsh': 'English',
+    'pnjabi': 'Punjabi', 'panjabi': 'Punjabi', 'punjab': 'Punjabi',
+    'gujrati': 'Gujarati', 'gujti': 'Gujarati', 'gujarat': 'Gujarati',
+    'spnish': 'Spanish', 'espanol': 'Spanish', 'spanis': 'Spanish',
+    'frnch': 'French', 'francais': 'French',
+    'japnese': 'Japanese', 'jap': 'Japanese', 'anime': 'Japanese', 'nihon': 'Japanese',
+    'korean': 'Korean', 'kpop': 'Korean', 'kdrama': 'Korean', 'korea': 'Korean',
+    'chinse': 'Chinese', 'chines': 'Chinese', 'mandarin': 'Chinese',
+    'urduu': 'Urdu', 'odishi': 'Odia', 'oriya': 'Odia',
+}
+
+GENRE_ALIASES = {
+    'horr': 'Horror', 'horro': 'Horror', 'horrr': 'Horror', 'horor': 'Horror', 'horrorr': 'Horror',
+    'scary': 'Horror', 'spooky': 'Horror', 'ghost': 'Horror', 'haunted': 'Horror', 'creepy': 'Horror',
+    'actn': 'Action', 'acton': 'Action', 'actionn': 'Action', 'fight': 'Action', 'fighting': 'Action',
+    'comdy': 'Comedy', 'comedi': 'Comedy', 'comedyy': 'Comedy', 'funny': 'Comedy', 'fun': 'Comedy', 'humor': 'Comedy', 'laugh': 'Comedy',
+    'thrilr': 'Thriller', 'thriler': 'Thriller', 'thril': 'Thriller', 'thrilling': 'Thriller', 'suspense': 'Thriller', 'thrill': 'Thriller',
+    'mystry': 'Mystery', 'mysteri': 'Mystery', 'myster': 'Mystery',
+    'romnc': 'Romance', 'romanc': 'Romance', 'romantic': 'Romance', 'love': 'Romance', 'romcom': 'Romance',
+    'scifi': 'Science Fiction', 'sci-fi': 'Science Fiction', 'sci fi': 'Science Fiction', 'space': 'Science Fiction', 'scifii': 'Science Fiction',
+    'anim': 'Animation', 'animated': 'Animation', 'animatn': 'Animation', 'cartoon': 'Animation', 'anime': 'Animation',
+    'dram': 'Drama', 'dramma': 'Drama', 'emotional': 'Drama', 'sad': 'Drama',
+    'advnture': 'Adventure', 'adventur': 'Adventure', 'advanture': 'Adventure',
+    'crm': 'Crime', 'gangster': 'Crime', 'mafia': 'Crime', 'cop': 'Crime', 'police': 'Crime',
+    'fantasi': 'Fantasy', 'fantsy': 'Fantasy', 'magic': 'Fantasy',
+    'docu': 'Documentary', 'documntry': 'Documentary',
+    'musi': 'Music', 'musical': 'Music', 'song': 'Music', 'songs': 'Music',
+    'western': 'Western', 'cowboy': 'Western',
+    'war': 'War', 'military': 'War', 'army': 'War',
+}
+
+KEYWORD_FIXES = {
+    'movis': 'movies', 'movi': 'movie', 'moive': 'movie', 'moivs': 'movies', 'mvoies': 'movies',
+    'flim': 'film', 'flims': 'films', 'cinma': 'cinema', 'cinemas': 'cinema',
+    'recomnd': 'recommend', 'recomended': 'recommended', 'recomadation': 'recommendation', 'rec': 'recommend', 'recs': 'recommendations',
+    'sugest': 'suggest', 'sugestion': 'suggestion', 'sujest': 'suggest',
+    'bset': 'best', 'tp': 'top', 'wathc': 'watch', 'lik': 'like', 'likd': 'liked', 'fav': 'favorite', 'favs': 'favorites',
+    'staring': 'starring', 'actor': 'cast', 'actress': 'cast', 'hero': 'cast', 'heroine': 'cast', 'director': 'cast',
+}
+
+# ── COMPREHENSIVE CAST & STAR FILMOGRAPHY KNOWLEDGE BASE ────────────────────
+CAST_DATABASE = {
+    # ── TELUGU (TOLLYWOOD) ──
+    'Prabhas': {
+        'aliases': ['prabhas', 'prabas', 'darling prabhas', 'rebel star', 'young rebel star', 'prabhas raju'],
+        'language': 'Telugu',
+        'titles': ['Baahubali: The Beginning', 'Baahubali 2: The Conclusion', 'Salaar', 'Kalki 2898 AD', 'Saaho', 'Mirchi', 'Chatrapathi', 'Darling', 'Mr. Perfect', 'Varsham', 'Billa', 'Radhe Shyam', 'Adipurush', 'Munna', 'Chakram', 'Pournami', 'Ek Niranjan', 'Rebel']
+    },
+    'Allu Arjun': {
+        'aliases': ['allu arjun', 'allu', 'arjun', 'bunny', 'stylish star', 'icon star', 'allu arjun films'],
+        'language': 'Telugu',
+        'titles': ['Pushpa: The Rise', 'Pushpa', 'Pushpa 2', 'Ala Vaikunthapurramuloo', 'Race Gurram', 'Sarrainodu', 'Arya', 'Arya 2', 'Julayi', 'Desamuduru', 'DJ: Duvvada Jagannadham', 'Vedam', 'Son of Satyamurthy', 'S/O Satyamurthy', 'Iddarammayilatho', 'Parugu', 'Happy', 'Badrinath', 'Rudhramadevi', 'Gangotri']
+    },
+    'Mahesh Babu': {
+        'aliases': ['mahesh babu', 'mahesh', 'superstar mahesh', 'prince mahesh', 'maheshbabu'],
+        'language': 'Telugu',
+        'titles': ['Pokiri', 'Srimanthudu', 'Bharat Ane Nenu', 'Maharshi', 'Sarileru Neekevvaru', 'Dookudu', 'Athadu', 'Businessman', 'Okkadu', 'Murari', '1: Nenokkadine', 'Spyder', 'Guntur Kaaram', 'Khaleja', 'Seethamma Vakitlo Sirimalle Chettu', 'Aagadu', 'Nani', 'Takkari Donga']
+    },
+    'Jr NTR': {
+        'aliases': ['jr ntr', 'ntr', 'tarak', 'young tiger', 'jr. ntr', 'nandamuri taraka rama rao', 'junior ntr'],
+        'language': 'Telugu',
+        'titles': ['RRR', 'Devara', 'Janatha Garage', 'Temper', 'Aravinda Sametha Veera Raghava', 'Nannaku Prematho', 'Simhadri', 'Yamadonga', 'Adhurs', 'Jai Lava Kusa', 'Brindavanam', 'Student No. 1', 'Aadi', 'Rakhi', 'Baadshah']
+    },
+    'Ram Charan': {
+        'aliases': ['ram charan', 'ramcharan', 'cherry', 'mega power star', 'ram charan tej'],
+        'language': 'Telugu',
+        'titles': ['RRR', 'Rangasthalam', 'Magadheera', 'Dhruva', 'Orange', 'Nayak', 'Yevadu', 'Govindudu Andarivadele', 'Chirutha', 'Game Changer', 'Vinaya Vidheya Rama', 'Bruce Lee: The Fighter', 'Acharya']
+    },
+    'Pawan Kalyan': {
+        'aliases': ['pawan kalyan', 'pawankalyan', 'power star', 'powerstar', 'pk', 'pawan'],
+        'language': 'Telugu',
+        'titles': ['Gabbar Singh', 'Attarintiki Daredi', 'Kushi', 'Tholi Prema', 'Badri', 'Jalsa', 'Vakeel Saab', 'Bheemla Nayak', 'Panjaa', 'Gopala Gopala', 'Johnny', 'Thammudu', 'Balu', 'Bro', 'Hari Hara Veera Mallu']
+    },
+    'Chiranjeevi': {
+        'aliases': ['chiranjeevi', 'megastar chiranjeevi', 'megastar', 'chiru', 'konidela siva sankara vara prasad'],
+        'language': 'Telugu',
+        'titles': ['Khaidi', 'Indra', 'Tagore', 'Shankar Dada M.B.B.S.', 'Waltair Veerayya', 'Godfather', 'Sye Raa Narasimha Reddy', 'Rudraveena', 'Gang Leader', 'Jagadeka Veerudu Athiloka Sundari', 'Gharana Mogudu', 'Mutha Mestri', 'Choodalani Vundi', 'Bavagaru Bagunnara?']
+    },
+    'Nani': {
+        'aliases': ['nani', 'natural star nani', 'natural star', 'ghanta naveen babu'],
+        'language': 'Telugu',
+        'titles': ['Jersey', 'Shyam Singha Roy', 'Dasara', 'Hi Nanna', 'Eega', 'Bhale Bhale Magadivoy', 'Ala Modalaindi', 'Gentleman', 'Ninnu Kori', 'Middle Class Abbayi', 'MCA', 'Ante Sundaraniki', 'Saripodhaa Sanivaaram', 'Gang Leader', 'Pilla Zamindar']
+    },
+    'Vijay Deverakonda': {
+        'aliases': ['vijay deverakonda', 'deverakonda', 'rowdy', 'vijay devarakonda'],
+        'language': 'Telugu',
+        'titles': ['Arjun Reddy', 'Geetha Govindam', 'Dear Comrade', 'Pelli Choopulu', 'Taxiwaala', 'Kushi', 'Liger', 'World Famous Lover', 'The Family Star', 'Mahanati']
+    },
+    'Nagarjuna': {
+        'aliases': ['nagarjuna', 'king nagarjuna', 'akkineni nagarjuna', 'nag'],
+        'language': 'Telugu',
+        'titles': ['Shiva', 'Annamayya', 'Geethanjali', 'Manmadhudu', 'Oopiri', 'Hello Brother', 'Ninne Pelladatha', 'Mass', 'Super', 'Wild Dog', 'Naa Saami Ranga', 'Manam', 'Gaganam', 'Soggade Chinni Nayana']
+    },
+    'Venkatesh': {
+        'aliases': ['venkatesh', 'victory venkatesh', 'venky', 'daggubati venkatesh', 'venky mama'],
+        'language': 'Telugu',
+        'titles': ['Drushyam', 'Drushyam 2', 'F2: Fun and Frustration', 'F3', 'Narappa', 'Kshana Kshanam', 'Swarna Kamalam', 'Chanti', 'Kalisundam Raa', 'Nuvvu Naaku Nachav', 'Malliswari', 'Seethamma Vakitlo Sirimalle Chettu', 'Guru', 'Saindhav', 'Gharshana', 'Bobbili Raja']
+    },
+    'Balakrishna': {
+        'aliases': ['balakrishna', 'nandamuri balakrishna', 'nbk', 'balayya'],
+        'language': 'Telugu',
+        'titles': ['Akhanda', 'Veera Simha Reddy', 'Bhagavanth Kesari', 'Legend', 'Simha', 'Aditya 369', 'Samarasimha Reddy', 'Narasimha Naidu', 'Gautamiputra Satakarni', 'Bhairava Dweepam', 'Chennakesava Reddy']
+    },
+    'Ravi Teja': {
+        'aliases': ['ravi teja', 'mass maharaja', 'raviteja'],
+        'language': 'Telugu',
+        'titles': ['Vikramarkudu', 'Kick', 'Krack', 'Dhamaka', 'Idiot', 'Venky', 'Dubai Seenu', 'Mirapakay', 'Raja The Great', 'Eagle', 'Waltair Veerayya', 'Amma Nanna O Tamila Ammayi', 'Naa Autograph']
+    },
+    'Samantha': {
+        'aliases': ['samantha', 'samantha ruth prabhu', 'sam', 'samantha akkineni'],
+        'language': 'Telugu',
+        'titles': ['Oh! Baby', 'Yashoda', 'Majili', 'Eega', 'Rangasthalam', 'U Turn', 'Super Deluxe', 'Ye Maaya Chesave', 'Dookudu', 'A Aa', 'Mersal', 'Theri', '24', 'Shaakuntalam', 'Kathuvakula Rendu Kaadhal']
+    },
+    'Anushka Shetty': {
+        'aliases': ['anushka shetty', 'anushka', 'sweety', 'sweety shetty'],
+        'language': 'Telugu',
+        'titles': ['Baahubali: The Beginning', 'Baahubali 2: The Conclusion', 'Arundhati', 'Rudhramadevi', 'Bhaagamathie', 'Vedam', 'Size Zero', 'Mirchi', 'Singam', 'Yennai Arindhaal', 'Miss Shetty Mr Polishetty', 'Deiva Thirumagal']
+    },
+    'Rashmika Mandanna': {
+        'aliases': ['rashmika mandanna', 'rashmika', 'national crush'],
+        'language': 'Telugu',
+        'titles': ['Pushpa: The Rise', 'Pushpa', 'Pushpa 2', 'Animal', 'Geetha Govindam', 'Dear Comrade', 'Sarileru Neekevvaru', 'Varisu', 'Goodbye', 'Mission Majnu', 'Kirik Party', 'Chalo', 'Bheeshma']
+    },
+    'SS Rajamouli': {
+        'aliases': ['ss rajamouli', 'rajamouli', 'ssr', 's.s. rajamouli'],
+        'language': 'Telugu',
+        'titles': ['RRR', 'Baahubali: The Beginning', 'Baahubali 2: The Conclusion', 'Eega', 'Magadheera', 'Chatrapathi', 'Vikramarkudu', 'Simhadri', 'Yamadonga', 'Maryada Ramanna', 'Sye', 'Student No. 1']
+    },
+
+    # ── HINDI (BOLLYWOOD) ──
+    'Shah Rukh Khan': {
+        'aliases': ['shah rukh khan', 'shahrukh khan', 'srk', 'king khan', 'king of bollywood', 'shahrukh'],
+        'language': 'Hindi',
+        'titles': ['Dilwale Dulhania Le Jayenge', 'Jawan', 'Pathaan', 'Chennai Express', 'Chak De! India', 'Swades', 'Kal Ho Naa Ho', 'Kuch Kuch Hota Hai', 'Kabhi Khushi Kabhie Gham', 'Don', 'Baazigar', 'My Name Is Khan', 'Raees', 'Devdas', 'Dunki', 'Veer-Zaara', 'Dil Se', 'Fan', 'Om Shanti Om', 'Darr', 'Karan Arjun', 'Main Hoon Na', 'Rab Ne Bana Di Jodi']
+    },
+    'Salman Khan': {
+        'aliases': ['salman khan', 'salman', 'bhai', 'bhaijaan', 'sallu', 'salmankhan'],
+        'language': 'Hindi',
+        'titles': ['Bajrangi Bhaijaan', 'Sultan', 'Tiger Zinda Hai', 'Ek Tha Tiger', 'Dabangg', 'Kick', 'Wanted', 'Tere Naam', 'Hum Aapke Hain Koun..!', 'Karan Arjun', 'Bodyguard', 'Bharat', 'Tiger 3', 'Andaz Apna Apna', 'Hum Dil De Chuke Sanam']
+    },
+    'Aamir Khan': {
+        'aliases': ['aamir khan', 'aamir', 'mr perfectionist', 'aamirkhan'],
+        'language': 'Hindi',
+        'titles': ['Dangal', '3 Idiots', 'PK', 'Lagaan: Once Upon a Time in India', 'Taare Zameen Par', 'Rang De Basanti', 'Ghajini', 'Dil Chahta Hai', 'Sarfarosh', 'Secret Superstar', 'Dhoom 3', 'Andaz Apna Apna', 'Talaash', 'Laal Singh Chaddha', 'Jo Jeeta Wohi Sikandar']
+    },
+    'Amitabh Bachchan': {
+        'aliases': ['amitabh bachchan', 'amitabh', 'big b', 'bachchan', 'shehenshah'],
+        'language': 'Hindi',
+        'titles': ['Sholay', 'Deewaar', 'Don', 'Zanjeer', 'Pink', 'Piku', 'Black', 'Sarkar', 'Agneepath', 'Paa', 'Kabhie Kabhie', 'Amar Akbar Anthony', 'Trishul', 'Badla', 'Brahmastra', 'Kalki 2898 AD', 'Baghban', 'Mohabbatein', 'Coolie']
+    },
+    'Hrithik Roshan': {
+        'aliases': ['hrithik roshan', 'hrithik', 'greek god', 'duggu'],
+        'language': 'Hindi',
+        'titles': ['Kaho Naa... Pyaar Hai', 'Koi... Mil Gaya', 'Krrish', 'Krrish 3', 'Dhoom 2', 'War', 'Super 30', 'Zindagi Na Milegi Dobara', 'Guzaarish', 'Agneepath', 'Jodhaa Akbar', 'Lakshya', 'Fighter', 'Kaabil', 'Mission Kashmir']
+    },
+    'Ranbir Kapoor': {
+        'aliases': ['ranbir kapoor', 'ranbir'],
+        'language': 'Hindi',
+        'titles': ['Animal', 'Rockstar', 'Barfi!', 'Sanju', 'Yeh Jawaani Hai Deewani', 'Wake Up Sid', 'Tamasha', 'Brahmastra', 'Rocket Singh: Salesman of the Year', 'Ajab Prem Ki Ghazab Kahani', 'Raajneeti', 'Tu Jhoothi Main Makkaar']
+    },
+    'Ranveer Singh': {
+        'aliases': ['ranveer singh', 'ranveer'],
+        'language': 'Hindi',
+        'titles': ['Padmaavat', 'Bajirao Mastani', 'Gully Boy', 'Simmba', 'Goliyon Ki Raasleela Ram-Leela', '83', 'Band Baaja Baaraat', 'Dil Dhadakne Do', 'Rocky Aur Rani Kii Prem Kahaani', 'Lootera']
+    },
+    'Akshay Kumar': {
+        'aliases': ['akshay kumar', 'akshay', 'khiladi', 'khiladi kumar'],
+        'language': 'Hindi',
+        'titles': ['Hera Pheri', 'Phir Hera Pheri', 'Welcome', 'Bhool Bhulaiyaa', 'Rowdy Rathore', 'Special 26', 'Baby', 'Airlift', 'Rustom', 'Kesari', 'OMG: Oh My God!', 'Padman', 'Toilet: Ek Prem Katha', 'Sooryavanshi', 'Mohra']
+    },
+    'Deepika Padukone': {
+        'aliases': ['deepika padukone', 'deepika'],
+        'language': 'Hindi',
+        'titles': ['Padmaavat', 'Piku', 'Chennai Express', 'Yeh Jawaani Hai Deewani', 'Bajirao Mastani', 'Om Shanti Om', 'Cocktail', 'Goliyon Ki Raasleela Ram-Leela', 'Pathaan', 'Jawan', 'Chhapaak', 'Gehraiyaan', 'Kalki 2898 AD', 'Fighter']
+    },
+    'Alia Bhatt': {
+        'aliases': ['alia bhatt', 'alia'],
+        'language': 'Hindi',
+        'titles': ['Gangubai Kathiawadi', 'Raazi', 'Highway', 'Udta Punjab', 'Gully Boy', 'Dear Zindagi', 'Brahmastra', 'Darlings', '2 States', 'Kapoor & Sons', 'Rocky Aur Rani Kii Prem Kahaani', 'RRR']
+    },
+
+    # ── TAMIL (KOLLYWOOD) ──
+    'Rajinikanth': {
+        'aliases': ['rajinikanth', 'rajini', 'thalaivar', 'superstar rajinikanth', 'superstar rajini'],
+        'language': 'Tamil',
+        'titles': ['Jailer', 'Enthiran', '2.0', 'Kabali', 'Sivaji', 'Baashha', 'Petta', 'Kaala', 'Chandramukhi', 'Padayappa', 'Muthu', 'Thalapathi', 'Darbar', 'Annamalai', 'Billa', 'Lal Salaam']
+    },
+    'Kamal Haasan': {
+        'aliases': ['kamal haasan', 'kamal hassan', 'kamal', 'ulaganayagan'],
+        'language': 'Tamil',
+        'titles': ['Vikram', 'Nayakan', 'Indian', 'Anbe Sivam', 'Hey Ram', 'Dasavathaaram', 'Vishwaroopam', 'Moondram Pirai', 'Thevar Magan', 'Virumaandi', 'Apoorva Sagodharargal', 'Panchatanthiram', 'Kalki 2898 AD', 'Indian 2']
+    },
+    'Vijay': {
+        'aliases': ['thalapathy vijay', 'thalapathy', 'vijay', 'joseph vijay'],
+        'language': 'Tamil',
+        'titles': ['Leo', 'Master', 'Mersal', 'Theri', 'Sarkar', 'Bigil', 'Varisu', 'Ghilli', 'Thuppakki', 'Kaththi', 'Pokkiri', 'Nanban', 'Beast', 'The Greatest of All Time', 'Sachein']
+    },
+    'Ajith Kumar': {
+        'aliases': ['ajith kumar', 'ajith', 'thala', 'thala ajith', 'ultimate star'],
+        'language': 'Tamil',
+        'titles': ['Mankatha', 'Vedalam', 'Viswasam', 'Thunivu', 'Valimai', 'Vivegam', 'Billa', 'Varalaru', 'Dheena', 'Citizen', 'Vaali', 'Amarkalam', 'Nerkonda Paarvai', 'Yennai Arindhaal', 'Arrambam']
+    },
+    'Suriya': {
+        'aliases': ['suriya', 'surya', 'saravanan sivakumar'],
+        'language': 'Tamil',
+        'titles': ['Soorarai Pottru', 'Jai Bhim', 'Singam', 'Ghajini', '24', 'Kaakha Kaakha', 'Vaaranam Aayiram', 'Ayan', '7aum Arivu', 'Anjaan', 'Kanguva', 'Pithamagan', 'Nandha']
+    },
+    'Dhanush': {
+        'aliases': ['dhanush', 'venkatesh prabhu kasthuri raja'],
+        'language': 'Tamil',
+        'titles': ['Asuran', 'Karnan', 'Aadukalam', 'Raanjhanaa', 'Velaiilla Pattadhari', 'VIP', 'Vada Chennai', 'Pudhupettai', 'Thiruchitrambalam', 'Captain Miller', 'Atrangi Re', 'The Gray Man', 'Polladhavan']
+    },
+    'Vikram': {
+        'aliases': ['vikram', 'chiyaan vikram', 'chiyaan', 'kennedy john victor'],
+        'language': 'Tamil',
+        'titles': ['Anniyan', 'I', 'Ponniyin Selvan: Part I', 'Ponniyin Selvan: Part II', 'Pithamagan', 'Sethu', 'Dhill', 'Dhool', 'Saamy', 'Deiva Thirumagal', 'Iru Mugan', 'Mahaan', 'Thangalaan', 'Ravanan', 'Raavanan']
+    },
+
+    # ── MALAYALAM (MOLLYWOOD) ──
+    'Mohanlal': {
+        'aliases': ['mohanlal', 'lalettan', 'the complete actor', 'mohan lal'],
+        'language': 'Malayalam',
+        'titles': ['Drishyam', 'Drishyam 2', 'Lucifer', 'Pulimurugan', 'Spadikam', 'Manichitrathazhu', 'Vanaprastham', 'Kireedam', 'Devaasuram', 'Kaalapani', 'Neru', 'Thanmathra', 'Bharatham', 'Iruvar', 'Company', 'Bro Daddy', 'Malaikottai Vaaliban']
+    },
+    'Mammootty': {
+        'aliases': ['mammootty', 'mammookka', 'muhammad kutty ismail paniparambil'],
+        'language': 'Malayalam',
+        'titles': ['Bramayugam', 'Kaathal: The Core', 'Bheeshma Parvam', 'Nanpakal Nerathu Mayakkam', 'CBI 5: The Brain', 'Oru Vadakkan Veeragatha', 'Dr. Babasaheb Ambedkar', 'Unda', 'Peranbu', 'Pathemari', 'New Delhi', 'Amaram', 'Vidheyan', 'Kannur Squad', 'Turbo']
+    },
+    'Fahadh Faasil': {
+        'aliases': ['fahadh faasil', 'fahadh', 'fafa', 'fahad fazil'],
+        'language': 'Malayalam',
+        'titles': ['Aavesham', 'Kumbalangi Nights', 'Malik', 'Joji', 'Trance', 'Maheshinte Prathikaaram', 'Thondimuthalum Driksakshiyum', 'Super Deluxe', 'Pushpa: The Rise', 'Vikram', 'Bangalore Days', 'C U Soon', 'Varathan', 'Njan Prakashan', 'North 24 Kaatham']
+    },
+    'Dulquer Salmaan': {
+        'aliases': ['dulquer salmaan', 'dulquer', 'dq'],
+        'language': 'Malayalam',
+        'titles': ['Sita Ramam', 'Charlie', 'Bangalore Days', 'Ustad Hotel', 'Kurup', 'Mahanati', 'O Kadhal Kanmani', 'Karwaan', 'Chup: Revenge of the Artist', 'King of Kotha', 'Lucky Baskhar', 'Kammatipaadam', 'Solo']
+    },
+    'Nivin Pauly': {
+        'aliases': ['nivin pauly', 'nivin'],
+        'language': 'Malayalam',
+        'titles': ['Premam', 'Bangalore Days', 'Moothon', 'Jacobinte Swargarajyam', 'Neram', 'Thattathin Marayathu', 'Action Hero Biju', 'Kayamkulam Kochunni', 'Love Action Drama', 'Ohm Shanthi Oshaana', 'Hey Jude']
+    },
+    'Tovino Thomas': {
+        'aliases': ['tovino thomas', 'tovino'],
+        'language': 'Malayalam',
+        'titles': ['Minnal Murali', '2018', 'Forensic', 'Kala', 'Mayanadhi', 'Virus', 'Thallumaala', 'Ajayante Randam Moshanam', 'Dear Friend', 'Guppy', 'Lucifer']
+    },
+
+    # ── KANNADA (SANDALWOOD) ──
+    'Yash': {
+        'aliases': ['yash', 'rocking star yash', 'rocky bhai', 'naveen kumar gowda'],
+        'language': 'Kannada',
+        'titles': ['K.G.F: Chapter 1', 'K.G.F: Chapter 2', 'Mr. and Mrs. Ramachari', 'Santhu Straight Forward', 'Googly', 'Raja Huli', 'Drama', 'Kirataka', 'Modalasala', 'Toxic', 'Masterpiece']
+    },
+    'Rishab Shetty': {
+        'aliases': ['rishab shetty', 'rishabh shetty', 'prashant shetty'],
+        'language': 'Kannada',
+        'titles': ['Kantara', 'Sarkari Hi. Pra. Shaale', 'Bell Bottom', 'Garuda Gamana Vrishabha Vahana', 'Kirik Party', 'Hero', 'Kantara: Chapter 1']
+    },
+    'Puneeth Rajkumar': {
+        'aliases': ['puneeth rajkumar', 'appu', 'powerstar puneeth', 'puneeth'],
+        'language': 'Kannada',
+        'titles': ['Raajakumara', 'Yuvarathnaa', 'Jackie', 'James', 'Appu', 'Milana', 'Arasu', 'Prithvi', 'Rana Vikrama', 'Anjani Putra', 'Gandhada Gudi', 'Power', 'Hudugaru']
+    },
+
+    # ── HOLLYWOOD / INTERNATIONAL ──
+    'Leonardo DiCaprio': {
+        'aliases': ['leonardo dicaprio', 'dicaprio', 'leo dicaprio', 'leo'],
+        'language': 'English',
+        'titles': ['Titanic', 'Inception', 'The Wolf of Wall Street', 'The Revenant', 'Shutter Island', 'Catch Me If You Can', 'The Departed', 'Django Unchained', 'Blood Diamond', 'Once Upon a Time in Hollywood', 'The Aviator', 'Gangs of New York', 'What\'s Eating Gilbert Grape', 'The Great Gatsby', 'Don\'t Look Up']
+    },
+    'Christopher Nolan': {
+        'aliases': ['christopher nolan', 'nolan', 'chris nolan'],
+        'language': 'English',
+        'titles': ['Inception', 'Interstellar', 'The Dark Knight', 'Oppenheimer', 'The Prestige', 'Memento', 'Tenet', 'Dunkirk', 'Batman Begins', 'The Dark Knight Rises', 'Following', 'Insomnia']
+    },
+    'Christian Bale': {
+        'aliases': ['christian bale', 'bale', 'batman'],
+        'language': 'English',
+        'titles': ['The Dark Knight', 'The Dark Knight Rises', 'Batman Begins', 'American Psycho', 'The Prestige', 'Ford v Ferrari', 'The Machinist', 'The Fighter', 'The Big Short', 'Vice', 'Thor: Love and Thunder', 'Empire of the Sun', '3:10 to Yuma']
+    },
+    'Tom Cruise': {
+        'aliases': ['tom cruise', 'cruise', 'ethan hunt', 'maverick'],
+        'language': 'English',
+        'titles': ['Top Gun: Maverick', 'Top Gun', 'Mission: Impossible', 'Mission: Impossible - Fallout', 'Mission: Impossible - Rogue Nation', 'Edge of Tomorrow', 'Jerry Maguire', 'Minority Report', 'The Last Samurai', 'Rain Man', 'A Few Good Men', 'Collateral', 'War of the Worlds', 'Oblivion', 'Jack Reacher']
+    },
+    'Robert Downey Jr': {
+        'aliases': ['robert downey jr', 'rdj', 'iron man', 'robert downey', 'tony stark'],
+        'language': 'English',
+        'titles': ['Iron Man', 'Iron Man 2', 'Iron Man 3', 'Avengers: Endgame', 'Avengers: Infinity War', 'The Avengers', 'Sherlock Holmes', 'Sherlock Holmes: A Game of Shadows', 'Oppenheimer', 'Chaplin', 'Tropic Thunder', 'Zodiac', 'Captain America: Civil War']
+    },
+    'Keanu Reeves': {
+        'aliases': ['keanu reeves', 'keanu', 'neo', 'john wick'],
+        'language': 'English',
+        'titles': ['The Matrix', 'The Matrix Reloaded', 'The Matrix Revolutions', 'The Matrix Resurrections', 'John Wick', 'John Wick: Chapter 2', 'John Wick: Chapter 3 - Parabellum', 'John Wick: Chapter 4', 'Speed', 'Constantine', 'Point Break', 'The Devil\'s Advocate']
+    },
+    'Cillian Murphy': {
+        'aliases': ['cillian murphy', 'cillian', 'tommy shelby'],
+        'language': 'English',
+        'titles': ['Oppenheimer', 'Inception', 'The Dark Knight', 'The Dark Knight Rises', 'Batman Begins', 'Dunkirk', '28 Days Later', 'Red Eye', 'A Quiet Place Part II', 'The Wind That Shakes the Barley', 'Sunshine']
+    },
+    'Brad Pitt': {
+        'aliases': ['brad pitt', 'pitt'],
+        'language': 'English',
+        'titles': ['Fight Club', 'Se7en', 'Inglourious Basterds', 'Once Upon a Time in Hollywood', 'Moneyball', 'Troy', 'Ocean\'s Eleven', 'Snatch', 'The Curious Case of Benjamin Button', 'World War Z', 'Fury', 'Ad Astra', 'Babylon', 'Bullet Train']
+    },
+    'Tom Hanks': {
+        'aliases': ['tom hanks', 'hanks', 'thomas jeffrey hanks'],
+        'language': 'English',
+        'titles': ['Forrest Gump', 'Saving Private Ryan', 'Cast Away', 'The Green Mile', 'Toy Story', 'Apollo 13', 'Captain Phillips', 'The Terminal', 'Catch Me If You Can', 'Bridge of Spies', 'Sully', 'Philadelphia', 'Sleepless in Seattle', 'The Polar Express', 'A Man Called Otto', 'News of the World']
+    },
+    'Quentin Tarantino': {
+        'aliases': ['quentin tarantino', 'tarantino'],
+        'language': 'English',
+        'titles': ['Pulp Fiction', 'Inglourious Basterds', 'Django Unchained', 'Kill Bill: Vol. 1', 'Kill Bill: Vol. 2', 'Once Upon a Time in Hollywood', 'Reservoir Dogs', 'The Hateful Eight', 'Jackie Brown', 'Death Proof']
+    },
+    'Johnny Depp': {
+        'aliases': ['johnny depp', 'depp', 'captain jack sparrow', 'jack sparrow'],
+        'language': 'English',
+        'titles': ['Pirates of the Caribbean: The Curse of the Black Pearl', 'Pirates of the Caribbean: Dead Man\'s Chest', 'Edward Scissorhands', 'Sweeney Todd', 'Sleepy Hollow', 'Finding Neverland', 'Donnie Brasco', 'Rango', 'Alice in Wonderland', 'Blow', 'Fear and Loathing in Las Vegas']
+    },
+    'Al Pacino': {
+        'aliases': ['al pacino', 'pacino', 'michael corleone'],
+        'language': 'English',
+        'titles': ['The Godfather', 'The Godfather Part II', 'Scarface', 'Heat', 'Dog Day Afternoon', 'Serpico', 'Scent of a Woman', 'The Irishman', 'Carlito\'s Way', 'The Devil\'s Advocate', 'Donnie Brasco']
+    },
+    'Robert De Niro': {
+        'aliases': ['robert de niro', 'de niro', 'deniro', 'vito corleone'],
+        'language': 'English',
+        'titles': ['The Godfather Part II', 'Taxi Driver', 'GoodFellas', 'Raging Bull', 'Casino', 'Heat', 'The Irishman', 'The Deer Hunter', 'Silver Linings Playbook', 'Joker', 'Meet the Parents', 'Awakenings']
+    },
+    'Morgan Freeman': {
+        'aliases': ['morgan freeman', 'freeman'],
+        'language': 'English',
+        'titles': ['The Shawshank Redemption', 'Se7en', 'The Dark Knight', 'Million Dollar Baby', 'Unforgiven', 'Driving Miss Daisy', 'Glory', 'Invictus', 'Bruce Almighty', 'Now You See Me', 'The Dark Knight Rises', 'Batman Begins']
+    },
+    'Denzel Washington': {
+        'aliases': ['denzel washington', 'denzel'],
+        'language': 'English',
+        'titles': ['Training Day', 'Glory', 'Malcolm X', 'Flight', 'The Equalizer', 'Fences', 'Remember the Titans', 'American Gangster', 'Inside Man', 'The Book of Eli', 'Man on Fire']
+    },
+    'Matthew McConaughey': {
+        'aliases': ['matthew mcconaughey', 'mcconaughey'],
+        'language': 'English',
+        'titles': ['Interstellar', 'Dallas Buyers Club', 'The Wolf of Wall Street', 'True Detective', 'Mud', 'A Time to Kill', 'The Gentlemen', 'Contact', 'How to Lose a Guy in 10 Days']
+    },
+    'Scarlett Johansson': {
+        'aliases': ['scarlett johansson', 'scarlett', 'black widow', 'natasha romanoff'],
+        'language': 'English',
+        'titles': ['Lost in Translation', 'The Avengers', 'Avengers: Endgame', 'Avengers: Infinity War', 'Her', 'Marriage Story', 'Jojo Rabbit', 'Lucy', 'Under the Skin', 'Black Widow', 'Match Point', 'The Prestige']
+    },
+    'Emma Stone': {
+        'aliases': ['emma stone', 'stone'],
+        'language': 'English',
+        'titles': ['La La Land', 'Poor Things', 'Birdman', 'The Favourite', 'Easy A', 'Cruella', 'The Amazing Spider-Man', 'Superbad', 'The Help', 'Zombieland']
+    },
+    'Anne Hathaway': {
+        'aliases': ['anne hathaway', 'hathaway'],
+        'language': 'English',
+        'titles': ['Interstellar', 'Les Misérables', 'The Dark Knight Rises', 'The Devil Wears Prada', 'Brokeback Mountain', 'The Princess Diaries', 'Ocean\'s 8', 'The Intern']
+    },
+    'Margot Robbie': {
+        'aliases': ['margot robbie', 'harley quinn', 'barbie'],
+        'language': 'English',
+        'titles': ['Barbie', 'The Wolf of Wall Street', 'Once Upon a Time in Hollywood', 'I, Tonya', 'Babylon', 'The Suicide Squad', 'Birds of Prey', 'Bombshell']
+    },
+    'Ryan Gosling': {
+        'aliases': ['ryan gosling', 'gosling', 'ken'],
+        'language': 'English',
+        'titles': ['La La Land', 'Blade Runner 2049', 'Drive', 'The Notebook', 'Barbie', 'First Man', 'Crazy, Stupid, Love.', 'The Nice Guys', 'Blue Valentine', 'The Big Short']
+    },
+    'Hugh Jackman': {
+        'aliases': ['hugh jackman', 'wolverine', 'logan'],
+        'language': 'English',
+        'titles': ['Logan', 'The Prestige', 'The Greatest Showman', 'Les Misérables', 'Prisoners', 'X-Men: Days of Future Past', 'X-Men: First Class', 'Deadpool & Wolverine', 'Real Steel', 'The Wolverine']
+    },
+    'Will Smith': {
+        'aliases': ['will smith', 'smith', 'fresh prince'],
+        'language': 'English',
+        'titles': ['The Pursuit of Happyness', 'Men in Black', 'I Am Legend', 'Aladdin', 'King Richard', 'Bad Boys', 'Independence Day', 'Enemy of the State', 'Seven Pounds', 'Hancock', 'I, Robot']
+    },
+    'Ryan Reynolds': {
+        'aliases': ['ryan reynolds', 'deadpool', 'wade wilson'],
+        'language': 'English',
+        'titles': ['Deadpool', 'Deadpool 2', 'Deadpool & Wolverine', 'Free Guy', 'The Adam Project', 'Red Notice', 'The Proposal', 'Buried', 'Pokemon Detective Pikachu']
+    },
+    'Denis Villeneuve': {
+        'aliases': ['denis villeneuve', 'villeneuve'],
+        'language': 'English',
+        'titles': ['Dune', 'Dune: Part Two', 'Blade Runner 2049', 'Arrival', 'Sicario', 'Prisoners', 'Incendies', 'Enemy']
+    },
+    'Martin Scorsese': {
+        'aliases': ['martin scorsese', 'scorsese'],
+        'language': 'English',
+        'titles': ['GoodFellas', 'Taxi Driver', 'The Wolf of Wall Street', 'The Departed', 'Raging Bull', 'Casino', 'Shutter Island', 'The Irishman', 'Killers of the Flower Moon', 'Gangs of New York']
+    },
+    'Steven Spielberg': {
+        'aliases': ['steven spielberg', 'spielberg'],
+        'language': 'English',
+        'titles': ['Schindler\'s List', 'Saving Private Ryan', 'Jurassic Park', 'Raiders of the Lost Ark', 'Jaws', 'E.T. the Extra-Terrestrial', 'Catch Me If You Can', 'Minority Report', 'Close Encounters of the Third Kind']
+    },
+    'James Cameron': {
+        'aliases': ['james cameron', 'cameron'],
+        'language': 'English',
+        'titles': ['Titanic', 'Avatar', 'Avatar: The Way of Water', 'The Terminator', 'Terminator 2: Judgment Day', 'Aliens', 'The Abyss', 'True Lies']
+    }
+}
 
 
 class MovieRecommender:
@@ -163,6 +583,54 @@ class MovieRecommender:
                 if g_key and g_key != 'unknown':
                     self.genre_indices.setdefault(g_key, []).append(i)
 
+        # Precompute top popular canonical titles for fast fuzzy title lookup
+        try:
+            top_sub = self.movies_df.iloc[self.canonical_indices].sort_values(
+                by=["vote_count", "popularity"], ascending=[False, False]
+            ).head(3000)
+            self.popular_titles_map = {}
+            for t_val in top_sub['title'].values:
+                t_clean = re.sub(r'[^a-zA-Z0-9\s]', ' ', str(t_val).lower()).strip()
+                t_clean = re.sub(r'\s+', ' ', t_clean)
+                if t_clean and len(t_clean) >= 3:
+                    self.popular_titles_map[t_clean] = str(t_val)
+            self.popular_titles_list = list(self.popular_titles_map.keys())
+        except Exception:
+            self.popular_titles_map = {}
+            self.popular_titles_list = []
+
+        # ── Precompute Cast / Star Indexes ─────────────────────────────────
+        self.cast_alias_map = {}
+        self.cast_indices = {}
+        for c_name, c_data in CAST_DATABASE.items():
+            canon_name = c_name
+            self.cast_alias_map[canon_name.lower().strip()] = canon_name
+            for alias in c_data.get('aliases', []):
+                self.cast_alias_map[alias.lower().strip()] = canon_name
+
+            c_indices = []
+            for kt in c_data.get('titles', []):
+                clean_kt = re.sub(r'[^a-zA-Z0-9\s]', ' ', str(kt).lower()).strip()
+                clean_kt = re.sub(r'\s+', ' ', clean_kt)
+                if clean_kt in self.title_to_idx:
+                    c_indices.extend(self.title_to_idx[clean_kt])
+                else:
+                    for t_key, idxs in self.title_to_idx.items():
+                        if clean_kt in t_key or (len(clean_kt) >= 5 and t_key in clean_kt):
+                            c_indices.extend(idxs)
+
+            seen_c = set()
+            ordered_c = []
+            for ci in c_indices:
+                cid = self.variant_id_to_canonical_id.get(int(self.movies_df.iloc[ci]['id']), int(self.movies_df.iloc[ci]['id']))
+                c_idx = self.id_to_idx.get(cid, ci)
+                if c_idx not in seen_c:
+                    seen_c.add(c_idx)
+                    ordered_c.append(c_idx)
+
+            ordered_c.sort(key=lambda idx: (float(self.movies_df.iloc[idx]['rating']), float(self.movies_df.iloc[idx]['popularity'])), reverse=True)
+            self.cast_indices[canon_name.lower()] = ordered_c
+
     def _load_cache(self):
         """Loads cached poster paths, YouTube trailer keys, and language variants"""
         self.meta_cache = {}
@@ -180,6 +648,13 @@ class MovieRecommender:
         cid = int(m_dict.get('canonical_id', mid))
         mid_str = str(mid)
         cid_str = str(cid)
+
+        # Ensure consistent rating on 0-10 scale
+        try:
+            m_dict['rating'] = round(float(m_dict.get('rating', 6.5)), 1)
+        except Exception:
+            m_dict['rating'] = 6.5
+        m_dict['imdb_rating'] = f"{m_dict['rating']}/10"
 
         cached = self.meta_cache.get(cid_str) or self.meta_cache.get(mid_str) or {}
         variants = cached.get('language_variants', {})
@@ -266,19 +741,46 @@ class MovieRecommender:
         if not movie:
             return None
 
-        # Check if movie already has an 11-character YouTube key
-        existing_key = movie.get('trailer_key')
-        if existing_key and str(existing_key).strip() and str(existing_key) != 'None' and len(str(existing_key).strip()) == 11 and not str(existing_key).strip().isdigit():
-            return str(existing_key).strip()
-
         mid = int(movie.get('id', movie_id))
         cid = int(movie.get('canonical_id', mid))
         mid_str = str(mid)
         cid_str = str(cid)
 
+        # Verified high-definition official trailer map
+        verified_trailers = {
+            278: "NmzuH14QJ38",   # The Shawshank Redemption
+            238: "sY1S34973zA",   # The Godfather
+            155: "EXeTwQWrcwY",   # The Dark Knight
+            27205: "YoHD9XEInc0", # Inception
+            157336: "zSWdZVtXT7E",# Interstellar
+            680: "s7EdQ4FqbhY",   # Pulp Fiction
+            550: "qtRKDV93JU8",   # Fight Club
+            129: "ByXuk9QqQkk",   # Spirited Away
+            496243: "5xH0RZE7t4E",# Parasite
+            372058: "xU47nhruN-Q",# Your Name
+            13: "bLvqoHBptjg",    # Forrest Gump
+            603: "vKQi3bBA1y8",   # The Matrix
+            19404: "c25GKl5VNeY", # DDLJ
+            299536: "6ZfuNTqbG80",# Avengers: Infinity War
+            299534: "TcMBFSGVi1c",# Avengers: Endgame
+            98: "P5ieIbInFpg",    # Gladiator
+            120: "V75dMMIW2B4",   # Lord of the Rings
+            244786: "7d_jQycdQGo",# Whiplash
+            324857: "tg52up16eq0",# Spider-Verse
+        }
+        if mid in verified_trailers:
+            return verified_trailers[mid]
+        if cid in verified_trailers:
+            return verified_trailers[cid]
+
+        # Check if movie already has an 11-character YouTube key
+        existing_key = movie.get('trailer_key')
+        if existing_key and str(existing_key).strip() and str(existing_key) != 'None' and len(str(existing_key).strip()) == 11 and not str(existing_key).strip().isdigit() and str(existing_key).strip() != 'PLl99DlL6b4':
+            return str(existing_key).strip()
+
         # Check memory / disk cache
         cached = self.meta_cache.get(cid_str) or self.meta_cache.get(mid_str) or {}
-        if cached.get('resolved_trailer_key'):
+        if cached.get('resolved_trailer_key') and str(cached['resolved_trailer_key']).strip() != 'PLl99DlL6b4':
             return cached['resolved_trailer_key']
 
         # Live scrape YouTube video ID for 100% in-player playback
@@ -308,10 +810,9 @@ class MovieRecommender:
                 self.meta_cache[cid_str]['trailer_url'] = f"https://www.youtube.com/watch?v={resolved_key}"
                 return resolved_key
         except Exception as e:
-            print(f"Warning: could not resolve trailer video key for {title}: {e}")
+            print(f"Notice: could not scrape trailer key for {title}: {e}")
 
-        # Fallback popular trailer key
-        return "PLl99DlL6b4"
+        return None
 
     def _deduplicate_canonical_movies(self, movies_list, limit=None, preferred_language=None):
         """Deduplicates a list of movies by canonical_id so each movie appears ONLY ONCE"""
@@ -330,13 +831,50 @@ class MovieRecommender:
                     break
         return deduped
 
+    def get_movie_by_id(self, movie_id, language=None):
+        """Returns single movie dictionary enriched with metadata (Canonical Deduplicated)"""
+        try:
+            mid = int(movie_id)
+        except Exception:
+            return None
+        cid = self.variant_id_to_canonical_id.get(mid, mid)
+        idx = self.id_to_idx.get(cid, self.id_to_idx.get(mid))
+        if idx is None:
+            return None
+        return self._enrich_movie_dict(dict(self.movies_df.iloc[idx]), lang=language)
+
+    def find_by_title(self, title, limit=1, language=None):
+        """Direct hash and substring lookup for a movie by its title"""
+        if not title:
+            return []
+        t_clean = re.sub(r'[^a-zA-Z0-9\s]', ' ', str(title).lower()).strip()
+        t_clean = re.sub(r'\s+', ' ', t_clean)
+
+        idxs = self.title_to_idx.get(t_clean, [])
+        if not idxs:
+            if hasattr(self, 'popular_titles_map') and t_clean in self.popular_titles_map:
+                pop_name = self.popular_titles_map[t_clean]
+                idxs = self.title_to_idx.get(re.sub(r'[^a-zA-Z0-9\s]', ' ', pop_name.lower()).strip(), [])
+
+        if not idxs:
+            for t_key, t_idxs in self.title_to_idx.items():
+                if t_clean == t_key or (len(t_clean) >= 4 and t_key.startswith(t_clean)):
+                    idxs = t_idxs
+                    break
+
+        if not idxs:
+            return self.search(title, limit=limit, language=language)
+
+        raw_list = [self.movies_df.iloc[i].to_dict() for i in idxs[:limit * 2]]
+        return self._deduplicate_canonical_movies(raw_list, limit=limit, preferred_language=language)
+
     # ── 2. Content-Based Model ──────────────────────────────────────────────
     def _build_content_model(self):
-        """Builds TF-IDF matrix over combined genres, language, and overview soup"""
+        """Builds TF-IDF matrix over combined genres, title, and overview soup (pure theme/plot similarity)"""
         soup_series = (
             self.movies_df["genres"].fillna("").str.replace("|", " ", regex=False) + " " +
             self.movies_df["genres"].fillna("").str.replace("|", " ", regex=False) + " " +
-            self.movies_df["language"].fillna("") + " " +
+            self.movies_df["title"].fillna("") + " " +
             self.movies_df["overview"].fillna("")
         )
 
@@ -489,8 +1027,10 @@ class MovieRecommender:
 
         return ordered_langs
 
-    def get_by_language(self, language, n=12):
+    def get_by_language(self, language, n=12, limit=None):
         """Returns top-rated & popular movies for a specific language with language variant pre-activated"""
+        if limit is not None:
+            n = limit
         if not language or language.lower() == 'all':
             return self.get_trending(n)
 
@@ -504,15 +1044,21 @@ class MovieRecommender:
         raw_list = top.to_dict("records")
         return self._deduplicate_canonical_movies(raw_list, limit=n, preferred_language=language)
 
-    # ── 6. Genre Filter & Search ───────────────────────────────────────────
-    def get_by_genre(self, genre, n=12, language=None):
-        """Returns top rated movies for a specific genre (Canonical Deduplicated)"""
+    # ── 6. Genre & Combined Multi-Filter Search ────────────────────────────
+    def get_by_genre(self, genre, n=12, language=None, limit=None, exclude_ids=None):
+        """Returns top rated movies for a specific genre (Canonical Deduplicated & Non-Repeating)"""
+        if limit is not None:
+            n = limit
         g_key = genre.lower().strip()
         indices = self.genre_indices.get(g_key, [])
+        ex_set = set(int(x) for x in exclude_ids if str(x).isdigit() or isinstance(x, (int, float))) if exclude_ids else set()
+
         if not indices:
             # Fallback substring match
             filtered = self.movies_df.iloc[self.canonical_indices]
             filtered = filtered[filtered["genres"].str.contains(genre, case=False, na=False)]
+            if ex_set:
+                filtered = filtered[~filtered["id"].isin(ex_set)]
             if filtered.empty:
                 return []
             if language and language.lower() != 'all':
@@ -520,10 +1066,12 @@ class MovieRecommender:
                     (filtered["language"].str.lower() == language.lower().strip()) |
                     (filtered["available_languages"].str.lower().str.contains(language.lower().strip(), na=False))
                 ]
-            top_genre = filtered.sort_values(by=["rating", "popularity"], ascending=[False, False]).head(n * 2)
+            top_genre = filtered.sort_values(by=["rating", "popularity"], ascending=[False, False]).head(n * 3)
             return self._deduplicate_canonical_movies(top_genre.to_dict("records"), limit=n, preferred_language=language)
 
         subset = self.movies_df.iloc[indices]
+        if ex_set:
+            subset = subset[~subset["id"].isin(ex_set)]
         if language and language.lower() != 'all':
             subset = subset[
                 (subset["language"].str.lower() == language.lower().strip()) |
@@ -532,39 +1080,378 @@ class MovieRecommender:
         if subset.empty:
             return []
 
-        top_genre = subset.sort_values(by=["rating", "popularity"], ascending=[False, False]).head(n * 2)
+        top_genre = subset.sort_values(by=["rating", "popularity"], ascending=[False, False]).head(n * 3)
         return self._deduplicate_canonical_movies(top_genre.to_dict("records"), limit=n, preferred_language=language)
 
-    def search(self, query, limit=18, language=None):
-        """Searches movies across titles, genres, and overviews with Canonical Deduplication (Exact 1 Card per movie)"""
-        q = query.strip().lower()
-        if not q:
+    def get_by_genre_and_language(self, genre, language, n=12, limit=None):
+        """
+        Returns top-rated & popular movies matching BOTH a specific language AND genre.
+        (e.g., Telugu Horror movies, Hindi Action movies, Malayalam Comedy movies)
+        """
+        if limit is not None:
+            n = limit
+        if not language or language.lower() == 'all':
+            return self.get_by_genre(genre, n)
+        if not genre or genre.lower() == 'all':
+            return self.get_by_language(language, n)
+
+        lang_key = language.lower().strip()
+        g_key = genre.lower().strip()
+
+        lang_idx_set = set(self.language_indices.get(lang_key, []))
+        g_idx_set = set(self.genre_indices.get(g_key, []))
+
+        combined_indices = list(lang_idx_set & g_idx_set)
+
+        if not combined_indices:
+            # Fallback direct dataframe filtering across canonical indices
+            filtered = self.movies_df.iloc[self.canonical_indices]
+            lang_mask = (
+                (filtered["language"].str.lower() == lang_key) |
+                (filtered["available_languages"].str.lower().str.contains(lang_key, na=False))
+            )
+            genre_mask = filtered["genres"].str.lower().str.contains(g_key, na=False)
+            matched_df = filtered[lang_mask & genre_mask]
+            if matched_df.empty:
+                return self.get_by_language(language, n)
+            top_movies = matched_df.sort_values(by=["rating", "vote_count", "popularity"], ascending=[False, False, False]).head(n * 2)
+            return self._deduplicate_canonical_movies(top_movies.to_dict("records"), limit=n, preferred_language=language)
+
+        subset = self.movies_df.iloc[combined_indices]
+        top = subset.sort_values(by=["rating", "vote_count", "popularity"], ascending=[False, False, False]).head(n * 2)
+        raw_list = top.to_dict("records")
+        return self._deduplicate_canonical_movies(raw_list, limit=n, preferred_language=language)
+
+    def get_by_cast(self, cast_name, n=12, genre=None, language=None, limit=None):
+        """
+        Returns top-rated & popular movies starring a specific actor/director/cast member.
+        Supports combined filters e.g. Prabhas action movies, Allu Arjun Telugu films.
+        """
+        if limit is not None:
+            n = limit
+        if not cast_name:
             return []
 
-        df_search = self.movies_df
+        c_clean = str(cast_name).lower().strip()
+        canonical_cast = self.cast_alias_map.get(c_clean, cast_name) if hasattr(self, 'cast_alias_map') else cast_name
+        indices = list(self.cast_indices.get(canonical_cast.lower(), [])) if hasattr(self, 'cast_indices') else []
+
+        # If no indexed movies or few results, search dataframe overview & title
+        if len(indices) < 4:
+            filtered_df = self.movies_df.iloc[self.canonical_indices]
+            matches = filtered_df[
+                filtered_df['title'].str.contains(canonical_cast, case=False, na=False) |
+                filtered_df['overview'].str.contains(canonical_cast, case=False, na=False)
+            ]
+            for idx in matches.index:
+                if idx not in indices:
+                    indices.append(idx)
+
+        if not indices:
+            return self.search(canonical_cast, limit=n, language=language)
+
+        subset = self.movies_df.iloc[indices]
+
+        # Filter by language if provided
+        if language and language.lower() != 'all':
+            lang_key = language.lower().strip()
+            lang_sub = subset[
+                (subset['language'].str.lower() == lang_key) |
+                (subset['available_languages'].str.lower().str.contains(lang_key, na=False))
+            ]
+            if not lang_sub.empty:
+                subset = lang_sub
+
+        # Filter by genre if provided
+        if genre and genre.lower() != 'all':
+            g_key = genre.lower().strip()
+            genre_sub = subset[subset['genres'].str.lower().str.contains(g_key, na=False)]
+            if not genre_sub.empty:
+                subset = genre_sub
+
+        top = subset.sort_values(by=["rating", "vote_count", "popularity"], ascending=[False, False, False]).head(n * 2)
+        return self._deduplicate_canonical_movies(top.to_dict("records"), limit=n, preferred_language=language)
+
+    def get_by_rating(self, min_rating=7.5, max_rating=None, n=18, language=None, genre=None, limit=None):
+        """
+        Returns top movies matching an IMDb rating threshold or tier (0 to 10 scale).
+        Automatically applies intelligent rating bands so movies change distinctly across different rating levels.
+        """
+        if limit is not None:
+            n = limit
+        try:
+            min_r = float(min_rating)
+        except Exception:
+            min_r = 7.5
+
+        # Intelligent tiering if max_rating is not explicitly provided
+        if max_rating is not None:
+            try:
+                max_r = float(max_rating)
+            except Exception:
+                max_r = 10.0
+        else:
+            if min_r >= 8.5:
+                max_r = 10.0
+            elif min_r >= 8.0:
+                max_r = 8.4
+            elif min_r >= 7.5:
+                max_r = 7.9
+            elif min_r >= 7.0:
+                max_r = 7.4
+            elif min_r >= 6.0:
+                max_r = 6.9
+            elif min_r >= 5.0:
+                max_r = 5.9
+            elif min_r > 0.0:
+                max_r = round(min_r + 0.8, 1)
+            else:
+                max_r = 10.0
+
+        df_pool = self.movies_df.iloc[self.canonical_indices]
+
+        # Filter by language if specified
         if language and language.lower() != 'all':
             lang_key = language.lower().strip()
             indices = self.language_indices.get(lang_key, [])
             if indices:
+                df_pool = self.movies_df.iloc[indices]
+
+        # Filter by genre if specified
+        if genre and genre.lower() != 'all':
+            g_key = genre.lower().strip()
+            indices = self.genre_indices.get(g_key, [])
+            if indices:
+                df_pool = df_pool[df_pool.index.isin(indices)]
+
+        # Filter by rating range
+        filtered = df_pool[(df_pool['rating'] >= min_r) & (df_pool['rating'] <= max_r)]
+        if filtered.empty:
+            filtered = df_pool[df_pool['rating'] >= max(0.0, min_r - 0.5)]
+
+        # Sort by popularity, vote count, and rating within the tier
+        top = filtered.sort_values(
+            by=["popularity", "vote_count", "rating"],
+            ascending=[False, False, False]
+        ).head(n * 3)
+
+        return self._deduplicate_canonical_movies(top.to_dict("records"), limit=n, preferred_language=language)
+
+    def normalize_and_extract_entities(self, query):
+        """
+        Normalizes typos, misspellings, and slangs from natural language queries
+        without modifying the underlying dataset.
+        Extracts:
+          - normalized_query
+          - detected_cast (e.g. 'Prabhas', 'Allu Arjun', 'Shah Rukh Khan', 'Leonardo DiCaprio', 'Tom Hanks')
+          - detected_language (e.g. 'Telugu', 'Hindi', 'Malayalam')
+          - detected_genres (e.g. ['Horror', 'Action', 'Comedy'])
+          - fuzzy_title_match (e.g. 'Interstellar' for 'intrstellar')
+          - corrections (dict mapping original -> corrected)
+        """
+        q_raw = str(query or "").strip()
+        if not q_raw:
+            return {
+                "raw_query": "",
+                "normalized_query": "",
+                "detected_cast": None,
+                "detected_language": None,
+                "detected_genres": [],
+                "fuzzy_title_match": None,
+                "corrections": {}
+            }
+
+        q_clean = re.sub(r'[^a-zA-Z0-9\s]', ' ', q_raw.lower())
+        tokens = q_clean.split()
+
+        all_known_langs = {l['name'].lower(): l['name'] for l in self.get_languages()}
+        all_known_genres = {g.lower(): g for g in self.get_genres()}
+        known_lang_keys = list(all_known_langs.keys())
+        known_genre_keys = list(all_known_genres.keys())
+
+        detected_cast = None
+        detected_lang = None
+        detected_genres = []
+        corrections = {}
+        corrected_tokens = []
+
+        # 1. Cast / Actor / Director entity detection from aliases (handling natural phrases like 'movies with...', 'movies starring...')
+        if hasattr(self, 'cast_alias_map') and self.cast_alias_map:
+            stripped_tokens = [t for t in tokens if t not in {'movies', 'movie', 'films', 'film', 'with', 'starring', 'featuring', 'of', 'by', 'show', 'recommend', 'actor', 'actress', 'hero', 'heroine', 'director', 'in'}]
+            token_candidates = [tokens]
+            if stripped_tokens and stripped_tokens != tokens:
+                token_candidates.append(stripped_tokens)
+
+            for token_list in token_candidates:
+                max_c_n = min(5, len(token_list))
+                for n in range(max_c_n, 0, -1):
+                    for i in range(len(token_list) - n + 1):
+                        phrase = ' '.join(token_list[i:i+n]).lower().strip()
+                        if phrase in self.cast_alias_map:
+                            detected_cast = self.cast_alias_map[phrase]
+                            break
+                    if detected_cast:
+                        break
+                if detected_cast:
+                    break
+
+            # If not matched directly, check fuzzy match against cast aliases
+            if not detected_cast and len(tokens) <= 8:
+                candidate_phrases = [' '.join(tokens)]
+                if stripped_tokens:
+                    candidate_phrases.append(' '.join(stripped_tokens))
+                if len(tokens) >= 2:
+                    candidate_phrases.extend([' '.join(tokens[:2]), ' '.join(tokens[1:3])])
+                for cp in candidate_phrases:
+                    fuzzy_cast = difflib.get_close_matches(cp, list(self.cast_alias_map.keys()), n=1, cutoff=0.80)
+                    if fuzzy_cast:
+                        detected_cast = self.cast_alias_map[fuzzy_cast[0]]
+                        corrections[cp] = detected_cast
+                        break
+
+        # 2. Token-level normalization & entity extraction
+        for token in tokens:
+            t = token.lower()
+            # Check noise word fixes first
+            if t in KEYWORD_FIXES:
+                corrected_tokens.append(KEYWORD_FIXES[t])
+                corrections[t] = KEYWORD_FIXES[t]
+                continue
+
+            # Check direct language alias
+            if t in LANGUAGE_ALIASES:
+                lang_name = LANGUAGE_ALIASES[t]
+                detected_lang = lang_name
+                corrected_tokens.append(lang_name.lower())
+                corrections[t] = lang_name
+                continue
+
+            # Check direct exact language match
+            if t in all_known_langs:
+                detected_lang = all_known_langs[t]
+                corrected_tokens.append(t)
+                continue
+
+            # Check direct genre alias
+            if t in GENRE_ALIASES:
+                genre_name = GENRE_ALIASES[t]
+                if genre_name not in detected_genres:
+                    detected_genres.append(genre_name)
+                corrected_tokens.append(genre_name.lower())
+                corrections[t] = genre_name
+                continue
+
+            # Check direct exact genre match
+            if t in all_known_genres:
+                g_name = all_known_genres[t]
+                if g_name not in detected_genres:
+                    detected_genres.append(g_name)
+                corrected_tokens.append(t)
+                continue
+
+            # Check difflib fuzzy match against languages (cutoff >= 0.72)
+            fuzzy_lang = difflib.get_close_matches(t, known_lang_keys, n=1, cutoff=0.72)
+            if fuzzy_lang and len(t) >= 4:
+                matched_l = all_known_langs[fuzzy_lang[0]]
+                detected_lang = matched_l
+                corrected_tokens.append(fuzzy_lang[0])
+                corrections[t] = matched_l
+                continue
+
+            # Check difflib fuzzy match against genres (cutoff >= 0.70)
+            fuzzy_g = difflib.get_close_matches(t, known_genre_keys, n=1, cutoff=0.70)
+            if fuzzy_g and len(t) >= 4:
+                matched_g = all_known_genres[fuzzy_g[0]]
+                if matched_g not in detected_genres:
+                    detected_genres.append(matched_g)
+                corrected_tokens.append(fuzzy_g[0])
+                corrections[t] = matched_g
+                continue
+
+            corrected_tokens.append(t)
+
+        normalized_query = ' '.join(corrected_tokens).strip()
+
+        # Multi-word genre check (e.g. "science fiction", "sci fi")
+        if 'science fiction' in normalized_query or 'sci fi' in normalized_query or 'scifi' in normalized_query:
+            if 'Science Fiction' not in detected_genres:
+                detected_genres.append('Science Fiction')
+
+        # 3. Fuzzy Title Match Check (for queries like "intrstellar", "godfthr")
+        fuzzy_title = None
+        if hasattr(self, 'popular_titles_list') and self.popular_titles_list and len(tokens) <= 5 and not detected_cast:
+            query_phrase = ' '.join([t for t in tokens if t not in {'movie', 'movies', 'film', 'films', 'the', 'a', 'in', 'show', 'recommend', 'recomnd', 'movis'}])
+            if query_phrase and len(query_phrase) >= 4:
+                if query_phrase in self.title_to_idx:
+                    fuzzy_title = query_phrase
+                else:
+                    close_titles = difflib.get_close_matches(query_phrase, self.popular_titles_list, n=1, cutoff=0.78)
+                    if close_titles:
+                        fuzzy_title = close_titles[0]
+                        corrections[query_phrase] = self.popular_titles_map.get(fuzzy_title, fuzzy_title)
+
+        return {
+            "raw_query": q_raw,
+            "normalized_query": normalized_query,
+            "detected_cast": detected_cast,
+            "detected_language": detected_lang,
+            "detected_genres": detected_genres,
+            "fuzzy_title_match": fuzzy_title,
+            "corrections": corrections
+        }
+
+    def search(self, query, limit=18, language=None):
+        """Searches movies across cast, titles, genres, and overviews with Canonical Deduplication & Fuzzy Normalization"""
+        q = str(query or "").strip().lower()
+        if not q:
+            return []
+
+        entities = self.normalize_and_extract_entities(q)
+        q_norm = entities["normalized_query"].lower()
+
+        target_lang = language if (language and language.lower() != 'all') else entities.get("detected_language")
+
+        # Prioritize cast name search if detected
+        if entities.get("detected_cast"):
+            cast_name = entities["detected_cast"]
+            genre = entities["detected_genres"][0] if entities.get("detected_genres") else None
+            cast_results = self.get_by_cast(cast_name, n=limit, genre=genre, language=target_lang)
+            if cast_results:
+                return cast_results
+
+        df_search = self.movies_df
+        if target_lang and target_lang.lower() != 'all':
+            lang_key = target_lang.lower().strip()
+            indices = self.language_indices.get(lang_key, [])
+            if indices:
                 df_search = self.movies_df.iloc[indices]
 
-        # Title match priority
-        title_matches = df_search[df_search["title"].str.lower().str.contains(q, na=False, regex=False)]
+        # Title match priority with original and normalized query
+        title_matches = df_search[
+            df_search["title"].str.lower().str.contains(q, na=False, regex=False) |
+            df_search["title"].str.lower().str.contains(q_norm, na=False, regex=False)
+        ]
         other_matches = df_search[
             (~df_search.index.isin(title_matches.index)) & (
                 df_search["genres"].str.lower().str.contains(q, na=False, regex=False) |
-                df_search["overview"].str.lower().str.contains(q, na=False, regex=False)
+                df_search["genres"].str.lower().str.contains(q_norm, na=False, regex=False) |
+                df_search["overview"].str.lower().str.contains(q, na=False, regex=False) |
+                df_search["overview"].str.lower().str.contains(q_norm, na=False, regex=False)
             )
         ]
 
         combined = pd.concat([title_matches, other_matches]).head(limit * 3)
-        return self._deduplicate_canonical_movies(combined.to_dict("records"), limit=limit, preferred_language=language)
+        return self._deduplicate_canonical_movies(combined.to_dict("records"), limit=limit, preferred_language=target_lang)
 
     # ── 7. Ultra-Fast Natural Language Search & Preference Engine ───────────
     def recommend_by_prompt(self, prompt, limit=18, language=None):
         """
-        Sub-millisecond AI Natural Language Query & Preference Recommendation Engine.
-        Returns Canonical Deduplicated results so each movie appears ONLY ONCE.
+        Sub-millisecond AI Natural Language Query & Multi-Filter Recommendation Engine.
+        Supports:
+          1. Cast / Star filmography searches (e.g. 'Prabhas', 'Allu Arjun action movies', 'Shah Rukh Khan')
+          2. Combined Language + Genre filters (e.g. 'Telugu horror movies', 'Hindi action movies', 'Malayalam comedy')
+          3. Misspelling / Fuzzy typo normalization (e.g. 'telgu horr movis' -> Telugu Horror movies)
+          4. Title entity preference & multi-anchor similarity
         """
         q = str(prompt or "").strip()
         if not q:
@@ -580,9 +1467,68 @@ class MovieRecommender:
                 }
             return {"success": True, "movies": [], "matched_movies": [], "recommendations": [], "type": "empty", "message": ""}
 
-        p_lower = q.lower()
-        cleaned = re.sub(r'[^a-zA-Z0-9\s]', ' ', p_lower)
-        words = cleaned.split()
+        # ── Step 0: Fuzzy Normalization & Entity Extraction ──
+        entities = self.normalize_and_extract_entities(q)
+        normalized_q = entities["normalized_query"]
+        p_lower = normalized_q.lower()
+        words = p_lower.split()
+
+        target_lang = language if (language and language.lower() != 'all') else entities.get("detected_language")
+        detected_genres = entities.get("detected_genres", [])
+        detected_cast = entities.get("detected_cast")
+
+        # Build helpful typo note if corrections occurred
+        typo_note = ""
+        if entities.get("corrections"):
+            corr_strs = [f"'{orig}' → '{corr}'" for orig, corr in entities["corrections"].items() if orig != corr.lower()]
+            if corr_strs:
+                typo_note = f" (Fuzzy matching applied: {', '.join(corr_strs[:2])})"
+
+        # ── Step 0.5: CAST / ACTOR / DIRECTOR RECOMMENDATION (e.g. "Prabhas", "Allu Arjun action movies", "Shah Rukh Khan") ──
+        if detected_cast:
+            cast_recs = self.get_by_cast(
+                detected_cast,
+                n=limit,
+                genre=detected_genres[0] if detected_genres else None,
+                language=target_lang
+            )
+            if cast_recs:
+                genres_title = f" ({', '.join(detected_genres)})" if detected_genres else ""
+                lang_title = f" [{target_lang}]" if target_lang else ""
+                msg = f"🌟 Showing top acclaimed movies starring {detected_cast}{lang_title}{genres_title}{typo_note}."
+                return {
+                    "success": True,
+                    "query": q,
+                    "normalized_query": normalized_q,
+                    "type": "cast_recommendation",
+                    "cast": detected_cast,
+                    "genres": detected_genres,
+                    "language": target_lang,
+                    "matched_movies": [],
+                    "recommendations": cast_recs,
+                    "movies": cast_recs,
+                    "message": msg
+                }
+
+        # ── Step 1: COMBINED LANGUAGE + GENRE FILTER (e.g. "Telugu horror movies", "telgu horr movis") ──
+        if target_lang and detected_genres:
+            genre_name = detected_genres[0]
+            combined_recs = self.get_by_genre_and_language(genre_name, target_lang, limit)
+            if combined_recs:
+                genres_label = " & ".join(detected_genres)
+                msg = f"🎯 Showing top acclaimed {target_lang} {genres_label} movies matching both language + genre filters{typo_note}."
+                return {
+                    "success": True,
+                    "query": q,
+                    "normalized_query": normalized_q,
+                    "type": "combined_preference",
+                    "language": target_lang,
+                    "genres": detected_genres,
+                    "matched_movies": [],
+                    "recommendations": combined_recs,
+                    "movies": combined_recs,
+                    "message": msg
+                }
 
         stopwords = {
             'i', 'me', 'my', 'we', 'liked', 'like', 'love', 'loved', 'watched', 'enjoyed',
@@ -592,7 +1538,7 @@ class MovieRecommender:
             'also', 'please', 'top', 'rated', 'cinema', 'watch'
         }
 
-        # ── Step 1: O(1) N-Gram Title Entity Extraction ──
+        # ── Step 2: O(1) N-Gram Title Entity Extraction + Fuzzy Title Resolution ──
         matched_candidates = []
         max_n = min(8, len(words))
         for n in range(max_n, 0, -1):
@@ -602,6 +1548,12 @@ class MovieRecommender:
                     continue
                 if phrase in self.title_to_idx:
                     matched_candidates.append((phrase, i, i + n, self.title_to_idx[phrase]))
+
+        # Check fuzzy title if no direct title found
+        if not matched_candidates and entities.get("fuzzy_title_match"):
+            f_title = entities["fuzzy_title_match"]
+            if f_title in self.title_to_idx:
+                matched_candidates.append((f_title, 0, len(words), self.title_to_idx[f_title]))
 
         matched_candidates.sort(key=lambda x: len(x[0]), reverse=True)
         final_matched_indices = []
@@ -622,10 +1574,10 @@ class MovieRecommender:
             or len(final_matched_indices) > 0
         )
 
-        # ── Step 2: Multi-Anchor Similarity Recommendation ──
+        # ── Step 3: Multi-Anchor Similarity Recommendation ──
         if final_matched_indices and has_preference_intent:
             matched_raw = [self.movies_df.iloc[i].to_dict() for i in final_matched_indices]
-            matched_movies = self._deduplicate_canonical_movies(matched_raw, preferred_language=language)
+            matched_movies = self._deduplicate_canonical_movies(matched_raw, preferred_language=target_lang)
 
             total_sim = np.zeros(len(self.movies_df))
             for idx in final_matched_indices:
@@ -642,8 +1594,8 @@ class MovieRecommender:
                 for same_idx in self.title_to_idx.get(t_clean, []):
                     quality_score[same_idx] = -1.0
 
-            if language and language.lower() != 'all':
-                lang_key = language.lower().strip()
+            if target_lang and target_lang.lower() != 'all':
+                lang_key = target_lang.lower().strip()
                 valid_indices = set(self.language_indices.get(lang_key, []))
                 mask = np.zeros(len(self.movies_df), dtype=bool)
                 for vi in valid_indices:
@@ -655,14 +1607,15 @@ class MovieRecommender:
                 self.movies_df.iloc[i].to_dict()
                 for i in top_indices if quality_score[i] > 0
             ]
-            recs = self._deduplicate_canonical_movies(raw_recs, limit=limit, preferred_language=language)
+            recs = self._deduplicate_canonical_movies(raw_recs, limit=limit, preferred_language=target_lang)
 
             titles_str = ' & '.join([f"'{m['title']}'" for m in matched_movies])
-            msg = f"✨ Matched preference for {titles_str}. Generated top similar recommendations based on theme, genre, and audience ratings."
+            msg = f"✨ Matched preference for {titles_str}{typo_note}. Generated top similar recommendations based on theme, genre, and audience ratings."
 
             return {
                 "success": True,
                 "query": q,
+                "normalized_query": normalized_q,
                 "type": "prompt_preference",
                 "matched_movies": matched_movies,
                 "recommendations": recs,
@@ -670,15 +1623,25 @@ class MovieRecommender:
                 "message": msg
             }
 
-        # ── Step 3: Genre Intent Preference ──
-        all_genres = self.get_genres()
-        detected_genres = [g for g in all_genres if g.lower() in p_lower]
-        if 'sci fi' in p_lower or 'scifi' in p_lower or 'science fiction' in p_lower:
-            detected_genres.append('Science Fiction')
-        detected_genres = list(set(detected_genres))
+        # ── Step 4: Single Language Filter ──
+        if target_lang and not detected_genres and any(w in words for w in ['movie', 'movies', 'film', 'films', 'cinema', 'show', 'top', 'best'] + [target_lang.lower()]):
+            lang_recs = self.get_by_language(target_lang, limit)
+            if lang_recs:
+                return {
+                    "success": True,
+                    "query": q,
+                    "normalized_query": normalized_q,
+                    "type": "language_filter",
+                    "language": target_lang,
+                    "matched_movies": [],
+                    "recommendations": lang_recs,
+                    "movies": lang_recs,
+                    "message": f"🌐 Top rated & trending {target_lang} movies{typo_note}."
+                }
 
+        # ── Step 5: Genre Intent Preference ──
         if detected_genres:
-            q_vec = self.tfidf.transform([q])
+            q_vec = self.tfidf.transform([normalized_q])
             sim_scores = cosine_similarity(q_vec, self.tfidf_matrix).flatten()
 
             genre_boost = np.zeros(len(self.movies_df))
@@ -689,8 +1652,8 @@ class MovieRecommender:
             ratings = self.movies_df['rating'].values
             total_scores = sim_scores * 0.40 + (genre_boost * 0.40) + (ratings / 10.0) * 0.20
 
-            if language and language.lower() != 'all':
-                lang_key = language.lower().strip()
+            if target_lang and target_lang.lower() != 'all':
+                lang_key = target_lang.lower().strip()
                 valid_indices = set(self.language_indices.get(lang_key, []))
                 mask = np.zeros(len(self.movies_df), dtype=bool)
                 for vi in valid_indices:
@@ -702,28 +1665,31 @@ class MovieRecommender:
                 self.movies_df.iloc[i].to_dict()
                 for i in top_indices if total_scores[i] > 0
             ]
-            recs = self._deduplicate_canonical_movies(raw_recs, limit=limit, preferred_language=language)
+            recs = self._deduplicate_canonical_movies(raw_recs, limit=limit, preferred_language=target_lang)
 
             return {
                 "success": True,
                 "query": q,
+                "normalized_query": normalized_q,
                 "type": "genre_preference",
+                "genres": detected_genres,
                 "matched_movies": [],
                 "recommendations": recs,
                 "movies": recs,
-                "message": f"🎯 Top recommendations for genres: {', '.join(detected_genres)}"
+                "message": f"🎯 Top recommendations for genres: {', '.join(detected_genres)}{typo_note}"
             }
 
-        # ── Step 4: Direct Search Fallback ──
-        search_results = self.search(q, limit=limit, language=language)
+        # ── Step 6: Direct Search Fallback ──
+        search_results = self.search(q, limit=limit, language=target_lang)
         return {
             "success": True,
             "query": q,
+            "normalized_query": normalized_q,
             "type": "direct_search",
             "matched_movies": [],
             "recommendations": search_results,
             "movies": search_results,
-            "message": f"Found {len(search_results)} matching titles in database"
+            "message": f"Found {len(search_results)} matching titles in database{typo_note}"
         }
 
     # ── 8. Discovery & Single Recommendation (Surprise Me) ──────────────────
