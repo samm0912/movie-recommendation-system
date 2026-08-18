@@ -40,14 +40,16 @@ def index():
     trending = rec.get_trending(12)
     genres = rec.get_genres()
     languages = rec.get_languages()
-    featured = rec.get_featured_movie()
+    featured_movies = rec.get_featured_movies(5)
+    featured = featured_movies[0] if featured_movies else None
     return render_template(
         "index.html",
         user=user,
         trending=trending,
         genres=genres,
         languages=languages,
-        featured=featured
+        featured=featured,
+        featured_movies=featured_movies
     )
 
 
@@ -466,19 +468,23 @@ def api_stats():
 # ── FEATURE: AI / LLM Chatbot Concierge (CineBot) ─────────────────────────
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
-    """Conversational Recommender Endpoint with Gemini AI & Local NLP Fallback"""
+    """Conversational Recommender Endpoint with Multi-Turn State & Local Hybrid ML"""
     data = request.json or {}
     message = data.get("message", "").strip()
     history = data.get("history", [])
     context_movie_id = data.get("context_movie_id")
+    session_state = data.get("session_state") or session.get("cinebot_state") or {}
     user = session.get("user")
 
     response = chatbot.chat(
         message=message,
         history=history,
         user=user,
-        context_movie_id=context_movie_id
+        context_movie_id=context_movie_id,
+        session_state=session_state
     )
+    if "session_state" in response:
+        session["cinebot_state"] = response["session_state"]
     return jsonify(response)
 
 

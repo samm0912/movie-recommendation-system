@@ -883,7 +883,7 @@ class MovieRecommender:
         self.vocab_size = len(self.tfidf.vocabulary_)
 
     def get_content_recommendations(self, movie_id, n=6, language=None):
-        """Return top-n content-similar movies based on TF-IDF cosine similarity (Canonical Deduplicated)"""
+        """Return top-n content-similar movies based on TF-IDF cosine similarity, genre affinity, and quality (Canonical Deduplicated)"""
         try:
             mid = int(movie_id)
         except Exception:
@@ -896,6 +896,31 @@ class MovieRecommender:
 
         sim_scores = cosine_similarity(self.tfidf_matrix[idx], self.tfidf_matrix).flatten()
 
+        # Exclude anchor movie, same-title matches, and derivative title strings
+        anchor_title = re.sub(r'[^a-zA-Z0-9\s]', ' ', str(self.movies_df.iloc[idx]['title']).lower()).strip()
+        anchor_title = re.sub(r'\s+', ' ', anchor_title)
+        for i, t in enumerate(self.movies_df['title'].values):
+            t_clean = re.sub(r'[^a-zA-Z0-9\s]', ' ', str(t).lower()).strip()
+            t_clean = re.sub(r'\s+', ' ', t_clean)
+            if anchor_title == t_clean or (len(anchor_title) >= 5 and (anchor_title in t_clean or t_clean in anchor_title)):
+                sim_scores[i] = -1.0
+
+        # Calculate genre affinity boost
+        source_genres = set([g.strip().lower() for g in str(self.movies_df.iloc[idx]['genres']).split('|') if g.strip()])
+        genre_boost = np.ones(len(self.movies_df))
+        for i, g_str in enumerate(self.movies_df['genres'].values):
+            c_genres = set([g.strip().lower() for g in str(g_str).split('|') if g.strip()])
+            shared = len(source_genres & c_genres)
+            if shared >= 2:
+                genre_boost[i] = 1.35
+            elif shared == 1:
+                genre_boost[i] = 1.10
+            else:
+                genre_boost[i] = 0.50
+
+        # Combined quality and thematic score
+        scored = sim_scores * self.quality_multiplier * genre_boost
+
         # If language filtering is requested
         if language and language.lower() != 'all':
             lang_key = language.lower().strip()
@@ -903,14 +928,14 @@ class MovieRecommender:
             mask = np.zeros(len(self.movies_df), dtype=bool)
             for vi in valid_indices:
                 mask[vi] = True
-            sim_scores[~mask] = -1.0
+            scored[~mask] = -1.0
 
         # Sort descending
-        top_indices = np.argpartition(sim_scores, -(n * 3 + 1))[-(n * 3 + 1):]
-        sorted_indices = top_indices[np.argsort(-sim_scores[top_indices])]
-
-        rec_indices = [i for i in sorted_indices if i != idx and sim_scores[i] > 0]
-        raw_recs = self.movies_df.iloc[rec_indices].to_dict("records")
+        top_indices = np.argsort(-scored)[:n * 4]
+        raw_recs = [
+            self.movies_df.iloc[i].to_dict()
+            for i in top_indices if scored[i] > 0 and i != idx
+        ]
         return self._deduplicate_canonical_movies(raw_recs, limit=n, preferred_language=language)
 
     # ── 3. Collaborative Filtering Model ───────────────────────────────────
@@ -1580,19 +1605,49 @@ class MovieRecommender:
             matched_movies = self._deduplicate_canonical_movies(matched_raw, preferred_language=target_lang)
 
             total_sim = np.zeros(len(self.movies_df))
+            source_genres = set()
             for idx in final_matched_indices:
                 sim = self.tfidf_matrix[idx].dot(self.tfidf_matrix.T).toarray().flatten()
                 total_sim += sim
+                for g in str(self.movies_df.iloc[idx]['genres']).split('|'):
+                    g_clean = g.strip().lower()
+                    if g_clean and g_clean != 'unknown':
+                        source_genres.add(g_clean)
 
-            quality_score = total_sim * self.quality_multiplier
-
-            # Exclude source anchor movies and same-title matches
+            # Exclude source anchor movies, canonical IDs, same-title matches, and derivative title strings
             for idx in final_matched_indices:
-                quality_score[idx] = -1.0
+                total_sim[idx] = -1.0
                 m_title = self.movies_df.iloc[idx]['title'].lower().strip()
                 t_clean = re.sub(r'[^a-zA-Z0-9\s]', ' ', m_title).strip()
+                t_clean = re.sub(r'\s+', ' ', t_clean)
                 for same_idx in self.title_to_idx.get(t_clean, []):
-                    quality_score[same_idx] = -1.0
+                    total_sim[same_idx] = -1.0
+
+            # Exclude titles containing the anchor title
+            for m in matched_movies:
+                m_t = re.sub(r'[^a-zA-Z0-9\s]', ' ', str(m.get('title', '')).lower()).strip()
+                m_t = re.sub(r'\s+', ' ', m_t)
+                if len(m_t) >= 5:
+                    for i, t in enumerate(self.movies_df['title'].values):
+                        cand_t = re.sub(r'[^a-zA-Z0-9\s]', ' ', str(t).lower()).strip()
+                        cand_t = re.sub(r'\s+', ' ', cand_t)
+                        if m_t == cand_t or (len(m_t) >= 5 and (m_t in cand_t or cand_t in m_t)):
+                            total_sim[i] = -1.0
+
+            # Genre affinity multiplier
+            genre_boost = np.ones(len(self.movies_df))
+            if source_genres:
+                for i, g_str in enumerate(self.movies_df['genres'].values):
+                    c_genres = set([g.strip().lower() for g in str(g_str).split('|') if g.strip()])
+                    shared = len(source_genres & c_genres)
+                    if shared >= 2:
+                        genre_boost[i] = 1.35
+                    elif shared == 1:
+                        genre_boost[i] = 1.10
+                    else:
+                        genre_boost[i] = 0.60
+
+            quality_score = total_sim * self.quality_multiplier * genre_boost
 
             if target_lang and target_lang.lower() != 'all':
                 lang_key = target_lang.lower().strip()
@@ -1602,12 +1657,16 @@ class MovieRecommender:
                     mask[vi] = True
                 quality_score[~mask] = -1.0
 
-            top_indices = np.argsort(-quality_score)[:limit * 3]
+            top_indices = np.argsort(-quality_score)[:limit * 4]
             raw_recs = [
                 self.movies_df.iloc[i].to_dict()
                 for i in top_indices if quality_score[i] > 0
             ]
             recs = self._deduplicate_canonical_movies(raw_recs, limit=limit, preferred_language=target_lang)
+
+            # Filter out matched movies from recs by canonical_id
+            matched_cids = {int(m.get('canonical_id', m.get('id', 0))) for m in matched_movies}
+            recs = [m for m in recs if int(m.get('canonical_id', m.get('id', 0))) not in matched_cids]
 
             titles_str = ' & '.join([f"'{m['title']}'" for m in matched_movies])
             msg = f"✨ Matched preference for {titles_str}{typo_note}. Generated top similar recommendations based on theme, genre, and audience ratings."
@@ -1712,36 +1771,79 @@ class MovieRecommender:
         return self._enrich_movie_dict(chosen_row, lang=language)
 
     # ── 9. Spotlight & Carousels ───────────────────────────────────────────
-    def get_featured_movie(self, language=None):
-        """Returns a dynamically rotating, high-profile blockbuster or acclaimed movie"""
+    def get_featured_movies(self, n=5, language=None):
+        """Returns a curated list of top blockbuster/highlight movies for the hero scroll carousel"""
         candidate_ids = [
+            157336,  # Interstellar
             27205,   # Inception
             155,     # The Dark Knight
-            157336,  # Interstellar
+            324857,  # Spider-Man: Into the Spider-Verse
+            299536,  # Avengers: Infinity War
             129,     # Spirited Away
             496243,  # Parasite
-            680,     # Pulp Fiction
-            550,     # Fight Club
+            98,      # Gladiator
+            603,     # The Matrix
             238,     # The Godfather
             372058,  # Your Name.
             244786,  # Whiplash
-            324857,  # Spider-Man: Into the Spider-Verse
-            299536,  # Avengers: Infinity War
             13,      # Forrest Gump
-            98,      # Gladiator
-            603,     # The Matrix
-            120,     # The Lord of the Rings
             19404,   # DDLJ
+            680,     # Pulp Fiction
+            550,     # Fight Club
         ]
-        valid_ids = [mid for mid in candidate_ids if mid in self.id_to_idx]
+        
+        tags = [
+            "#1 Trending This Week",
+            "🔥 #2 Top Rated Blockbuster",
+            "🧠 #3 ML Recommendation Pick",
+            "✨ #4 Critic's Choice Award",
+            "🚀 #5 Sci-Fi Spotlight",
+            "🌟 #6 Viewer Favorite",
+            "🎬 #7 Cinematic Masterpiece"
+        ]
+        
+        results = []
+        seen_ids = set()
+        
+        # If language is filtered, get top from that language
         if language and language.lower() != 'all':
-            lang_recs = self.get_by_language(language, 1)
-            if lang_recs:
-                return lang_recs[0]
+            lang_movies = self.get_by_language(language, n)
+            for idx, m in enumerate(lang_movies[:n]):
+                m_copy = dict(m)
+                m_copy['spotlight_tag'] = tags[idx % len(tags)]
+                results.append(m_copy)
+            if results:
+                return results
 
-        if valid_ids:
-            chosen_id = random.choice(valid_ids)
-            return self.get_movie_by_id(chosen_id)
+        # Gather valid candidate IDs
+        valid_ids = [mid for mid in candidate_ids if mid in self.id_to_idx]
+        for mid in valid_ids:
+            if mid not in seen_ids and len(results) < n:
+                m = self.get_movie_by_id(mid)
+                if m:
+                    m_copy = dict(m)
+                    m_copy['spotlight_tag'] = tags[len(results) % len(tags)]
+                    results.append(m_copy)
+                    seen_ids.add(mid)
+
+        # Fallback if needed
+        if len(results) < n:
+            top_movies = self.get_trending(n)
+            for m in top_movies:
+                mid = m.get('id')
+                if mid and mid not in seen_ids and len(results) < n:
+                    m_copy = dict(m)
+                    m_copy['spotlight_tag'] = tags[len(results) % len(tags)]
+                    results.append(m_copy)
+                    seen_ids.add(mid)
+
+        return results
+
+    def get_featured_movie(self, language=None):
+        """Returns a dynamically rotating, high-profile blockbuster or acclaimed movie"""
+        movies = self.get_featured_movies(1, language=language)
+        if movies:
+            return movies[0]
         return self._get_top_rated(1)[0]
 
     def get_trending(self, n=12, language=None):

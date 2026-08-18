@@ -6,14 +6,32 @@ window.addEventListener('scroll', () => {
 });
 
 // Mobile Navigation Toggle
-function toggleMobileNav() {
+function toggleMobileNav(forceState = null) {
   const toggle = document.getElementById('mobileNavToggle');
   const drawer = document.getElementById('mobileNavDrawer');
   if (toggle && drawer) {
-    toggle.classList.toggle('open');
-    drawer.classList.toggle('open');
+    const shouldOpen = forceState !== null ? forceState : !drawer.classList.contains('open');
+    toggle.classList.toggle('open', shouldOpen);
+    drawer.classList.toggle('open', shouldOpen);
   }
 }
+
+// Close mobile drawer when resizing back to desktop or clicking outside
+window.addEventListener('resize', () => {
+  if (window.innerWidth > 1024) {
+    toggleMobileNav(false);
+  }
+});
+
+document.addEventListener('click', (e) => {
+  const drawer = document.getElementById('mobileNavDrawer');
+  const toggle = document.getElementById('mobileNavToggle');
+  if (drawer && drawer.classList.contains('open')) {
+    if (!drawer.contains(e.target) && toggle && !toggle.contains(e.target)) {
+      toggleMobileNav(false);
+    }
+  }
+});
 
 // Quick Search Keyboard Shortcut ('/' or 'Ctrl+K')
 document.addEventListener('keydown', (e) => {
@@ -1182,9 +1200,25 @@ document.addEventListener('keydown', e => {
   }
 });
 
-// ── Modal UI Helpers ──────────────────────────────────────────────────────
-function openModal(id)  { document.getElementById(id)?.classList.add('open'); }
-function closeModal(id) { document.getElementById(id)?.classList.remove('open'); }
+// ── Modal UI Helpers (with mobile body scroll-lock) ───────────────────────
+function openModal(id)  {
+  const m = document.getElementById(id);
+  if (m) {
+    m.classList.add('open');
+    document.body.classList.add('modal-open');
+  }
+}
+function closeModal(id) {
+  const m = document.getElementById(id);
+  if (m) {
+    m.classList.remove('open');
+    // If no other modal is open, remove modal-open from body
+    const openModals = document.querySelectorAll('.modal-overlay.open');
+    if (openModals.length === 0) {
+      document.body.classList.remove('modal-open');
+    }
+  }
+}
 
 // ── Toast System ──────────────────────────────────────────────────────────
 function showToast(msg) {
@@ -1227,9 +1261,10 @@ function escapeJsStr(str) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   CINEBOT AI CONVERSATIONAL CONTROLLER
+   CINEBOT AI MULTI-TURN CONVERSATIONAL CONTROLLER
 ════════════════════════════════════════════════════════════════════════════ */
 let cinebotHistory = [];
+let cinebotState = {};
 let cinebotIsLoading = false;
 
 function toggleChatbot() {
@@ -1262,17 +1297,18 @@ function closeChatbot() {
 
 function clearChat() {
   cinebotHistory = [];
+  cinebotState = {};
   const body = document.getElementById('cinebotBody');
   if (body) {
     body.innerHTML = `
       <div class="cinebot-msg bot intro-msg">
         <div class="cinebot-msg-bubble">
           <p>👋 Chat cleared! I'm ready for new questions or recommendations.</p>
-          <p>Ask for movies like <em>"Interstellar"</em>, request specific moods, or say <em>"Surprise Me"</em>!</p>
+          <p>Ask for movies like <em>"I liked Interstellar"</em>, request specific genres/moods, or say <em>"Surprise Me"</em>!</p>
         </div>
       </div>`;
   }
-  updateChatChips(["🌌 Interstellar", "🍿 Surprise Me", "😂 Feel-Good", "🧠 How ML Works"]);
+  updateChatChips(["🌌 I liked Interstellar", "🍿 Surprise Me", "😂 Feel-Good Hits", "🧠 How ML Works"]);
 }
 
 function sendChatPrompt(promptText) {
@@ -1298,6 +1334,9 @@ function formatMarkdownText(text) {
   formatted = formatted.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
   // Italic *text*
   formatted = formatted.replace(/\*(.*?)\*/g, '<em>$1</em>');
+  // Blockquotes > text
+  formatted = formatted.replace(/&gt;\s*\*(.*?)\*/g, '<blockquote><em>$1</em></blockquote>');
+  formatted = formatted.replace(/&gt;\s*(.*?)(?=<br>|<\/p>|$)/g, '<blockquote>$1</blockquote>');
   // Line breaks
   formatted = formatted.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>');
   return `<p>${formatted}</p>`;
@@ -1336,7 +1375,8 @@ async function executeChat(message) {
   try {
     const data = await apiFetch('/api/chat', 'POST', {
       message: message,
-      history: cinebotHistory
+      history: cinebotHistory,
+      session_state: cinebotState
     });
 
     // Remove typing bubble
@@ -1344,6 +1384,11 @@ async function executeChat(message) {
     if (currentTyping) currentTyping.remove();
 
     if (data && data.success) {
+      // Update session state
+      if (data.session_state) {
+        cinebotState = data.session_state;
+      }
+
       // 3. Render bot response message
       const botMsgEl = document.createElement('div');
       botMsgEl.className = 'cinebot-msg bot';
@@ -1366,12 +1411,12 @@ async function executeChat(message) {
         tagEl.textContent = (data.mode === 'gemini_ai') ? 'Gemini AI' : 'Hybrid ML';
       }
 
-      // Update chips if provided
+      // Update suggestion chips if provided
       if (data.suggested_prompts && data.suggested_prompts.length > 0) {
         updateChatChips(data.suggested_prompts);
       }
 
-      // Append to local history (limit to last 10 turns)
+      // Append to local history (limit to last 12 turns)
       cinebotHistory.push({ role: 'user', content: message });
       cinebotHistory.push({ role: 'model', content: data.reply });
       if (cinebotHistory.length > 12) {
@@ -1412,35 +1457,55 @@ function renderChatMovieCards(movies) {
   if (!movies || !movies.length) return '';
   const fallbackImg = 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=500&auto=format&fit=crop&q=60';
   
-  const cards = movies.map(m => {
+  const isMultiSet = movies.length > 1;
+
+  const cards = movies.map((m, idx) => {
     const poster = m.poster || fallbackImg;
-    const genres = (m.genres || '').replace(/\|/g, ' · ').slice(0, 24);
+    const genres = (m.genres || '').replace(/\|/g, ' · ').slice(0, 26);
     const title = escapeHtml(m.title);
-    const trailerBtn = (m.has_trailer || m.trailer_key)
-      ? `<button class="chat-action-btn chat-btn-trailer" onclick="event.stopPropagation(); openTrailer('${m.trailer_key || m.id}', '${escapeJsStr(m.title)}')">▶ Trailer</button>`
-      : `<button class="chat-action-btn chat-btn-trailer" onclick="event.stopPropagation(); openTrailer('${m.id}', '${escapeJsStr(m.title)}')">▶ Trailer</button>`;
+    const year = m.year || '';
+    const rating = m.rating || '7.0';
+    const trailerKey = m.trailer_key || '';
+    const movieId = m.id;
+
+    const trailerBtn = (m.has_trailer || m.trailer_key || m.trailer_url)
+      ? `<button class="chat-action-btn chat-btn-trailer" title="Play HD Trailer" onclick="event.stopPropagation(); openTrailer('${trailerKey || movieId}', '${escapeJsStr(m.title)}')">▶ Trailer</button>`
+      : `<button class="chat-action-btn chat-btn-trailer" title="Search Trailer" onclick="event.stopPropagation(); openTrailer('${movieId}', '${escapeJsStr(m.title)}')">▶ Trailer</button>`;
+
+    const numBadge = isMultiSet ? `<span class="chat-card-num">#${idx + 1}</span>` : '';
 
     return `
-      <div class="chat-movie-card" onclick="window.location='/movie/${m.id}'">
-        <img class="chat-card-poster" src="${poster}" alt="${title}" loading="lazy" onerror="this.onerror=null; this.src='${fallbackImg}'">
+      <div class="chat-movie-card" onclick="window.location='/movie/${movieId}'" title="View ${title} details">
+        <div class="chat-card-poster-wrap">
+          <img class="chat-card-poster" src="${poster}" alt="${title}" loading="lazy" onerror="this.onerror=null; this.src='${fallbackImg}'">
+          ${numBadge}
+        </div>
         <div class="chat-card-content">
           <div>
-            <div class="chat-card-title" title="${title}">${title}</div>
+            <div class="chat-card-title">${title}</div>
             <div class="chat-card-meta">
-              <span class="chat-card-rating">⭐ ${m.rating}/10</span>
-              <span>· ${m.year}</span>
+              <span class="chat-card-rating">⭐ ${rating}/10</span>
+              <span>· ${year}</span>
             </div>
             <div class="chat-card-genres">${escapeHtml(genres)}</div>
           </div>
           <div class="chat-card-actions">
             ${trailerBtn}
-            <button class="chat-action-btn chat-btn-view" onclick="event.stopPropagation(); window.location='/movie/${m.id}'">ℹ Details</button>
+            <button class="chat-action-btn chat-btn-view" title="View Full Details" onclick="event.stopPropagation(); window.location='/movie/${movieId}'">ℹ Details</button>
           </div>
         </div>
       </div>`;
   }).join('');
 
-  return `<div class="chat-cards-list">${cards}</div>`;
+  const showMoreBtn = isMultiSet ? `
+    <div class="chat-show-more-wrap">
+      <button class="chat-show-more-btn" onclick="event.stopPropagation(); sendChatPrompt('Give me more')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="14" height="14"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span>Show More Movies</span>
+      </button>
+    </div>` : '';
+
+  return `<div class="chat-cards-list">${cards}${showMoreBtn}</div>`;
 }
 
 function updateChatChips(prompts) {
@@ -1449,5 +1514,228 @@ function updateChatChips(prompts) {
   chipsContainer.innerHTML = prompts.map(p => `
     <button class="chat-chip" onclick="sendChatPrompt('${escapeJsStr(p)}')">${escapeHtml(p)}</button>
   `).join('');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// DYNAMIC SCREEN & DEVICE ADJUSTMENT CONTROLLER (DeviceManager)
+// ════════════════════════════════════════════════════════════════════════════
+const DeviceManager = {
+  init() {
+    this.update();
+    window.addEventListener('resize', () => this.handleResize(), { passive: true });
+    window.addEventListener('orientationchange', () => this.handleOrientationChange(), { passive: true });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', () => this.updateViewportMetrics(), { passive: true });
+    }
+  },
+
+  getDeviceType() {
+    const w = window.innerWidth;
+    if (w >= 1920) return 'ultrawide';
+    if (w >= 1366) return 'desktop';
+    if (w >= 1024) return 'laptop';
+    if (w >= 641) return 'tablet';
+    return 'mobile';
+  },
+
+  getAspectRatioCategory() {
+    const ratio = window.innerWidth / Math.max(1, window.innerHeight);
+    if (ratio >= 2.2) return 'ultrawide';
+    if (ratio >= 1.6) return 'widescreen';
+    if (ratio >= 1.2) return 'standard-landscape';
+    if (ratio >= 0.8) return 'square';
+    if (ratio >= 0.52) return 'standard-portrait';
+    return 'ultratall-portrait';
+  },
+
+  update() {
+    const root = document.documentElement;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+    const orientation = w >= h ? 'landscape' : 'portrait';
+    const deviceType = this.getDeviceType();
+    const aspectCategory = this.getAspectRatioCategory();
+
+    // Set CSS custom variables for dynamic viewport heights (iOS / Android browser toolbars)
+    root.style.setProperty('--app-height', `${h}px`);
+    root.style.setProperty('--vh', `${h * 0.01}px`);
+    root.style.setProperty('--app-width', `${w}px`);
+    root.style.setProperty('--device-aspect-ratio', `${(w / h).toFixed(2)}`);
+
+    // Set semantic HTML data attributes
+    root.setAttribute('data-device', deviceType);
+    root.setAttribute('data-orientation', orientation);
+    root.setAttribute('data-touch', isTouch ? 'true' : 'false');
+    root.setAttribute('data-aspect-ratio', aspectCategory);
+  },
+
+  updateViewportMetrics() {
+    if (!window.visualViewport) return;
+    const vh = window.visualViewport.height;
+    document.documentElement.style.setProperty('--visual-vh', `${vh}px`);
+  },
+
+  handleResize() {
+    if (this._resizeTimeout) cancelAnimationFrame(this._resizeTimeout);
+    this._resizeTimeout = requestAnimationFrame(() => {
+      this.update();
+      // If user expands screen to desktop size (>= 950px), ensure mobile drawer is closed
+      if (window.innerWidth >= 950) {
+        const drawer = document.getElementById('mobileNavDrawer');
+        const toggle = document.getElementById('mobileNavToggle');
+        if (drawer && drawer.classList.contains('open')) {
+          drawer.classList.remove('open');
+          if (toggle) toggle.classList.remove('open');
+        }
+      }
+    });
+  },
+
+  handleOrientationChange() {
+    setTimeout(() => {
+      this.update();
+      // Close mobile drawer on orientation change to prevent layout jumping
+      const drawer = document.getElementById('mobileNavDrawer');
+      const toggle = document.getElementById('mobileNavToggle');
+      if (drawer && drawer.classList.contains('open')) {
+        drawer.classList.remove('open');
+        if (toggle) toggle.classList.remove('open');
+      }
+    }, 150);
+  }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// HERO MULTI-MOVIE FEATURED SCROLL CAROUSEL CONTROLLER
+// ════════════════════════════════════════════════════════════════════════════
+const HeroSlider = {
+  currentIndex: 0,
+  slides: [],
+  dots: [],
+  autoPlayTimer: null,
+  autoPlayInterval: 6500, // 6.5s per slide
+  isPaused: false,
+  touchStartX: 0,
+  touchEndX: 0,
+
+  init() {
+    this.slides = Array.from(document.querySelectorAll('.hero-slide'));
+    this.dots = Array.from(document.querySelectorAll('.hero-indicator-dot'));
+    if (this.slides.length <= 1) return;
+
+    const heroSection = document.getElementById('heroCarouselSection');
+    if (heroSection) {
+      // Pause autoplay on mouse enter / hover
+      heroSection.addEventListener('mouseenter', () => this.pause());
+      heroSection.addEventListener('mouseleave', () => this.resume());
+
+      // Touch swipe support for mobile
+      heroSection.addEventListener('touchstart', (e) => {
+        if (e.changedTouches && e.changedTouches.length > 0) {
+          this.touchStartX = e.changedTouches[0].screenX;
+        }
+      }, { passive: true });
+
+      heroSection.addEventListener('touchend', (e) => {
+        if (e.changedTouches && e.changedTouches.length > 0) {
+          this.touchEndX = e.changedTouches[0].screenX;
+          this.handleSwipe();
+        }
+      }, { passive: true });
+    }
+
+    // Keyboard navigation (Left / Right Arrow)
+    document.addEventListener('keydown', (e) => {
+      const hero = document.getElementById('heroCarouselSection');
+      if (!hero) return;
+      // Only trigger if user is not typing in an input
+      if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
+        return;
+      }
+      if (e.key === 'ArrowLeft') {
+        this.prev();
+      } else if (e.key === 'ArrowRight') {
+        this.next();
+      }
+    });
+
+    this.startAutoPlay();
+  },
+
+  handleSwipe() {
+    const deltaX = this.touchEndX - this.touchStartX;
+    if (Math.abs(deltaX) > 40) {
+      if (deltaX < 0) {
+        this.next(); // Swiped left -> next slide
+      } else {
+        this.prev(); // Swiped right -> prev slide
+      }
+    }
+  },
+
+  goTo(index) {
+    if (this.slides.length === 0) return;
+    this.currentIndex = (index + this.slides.length) % this.slides.length;
+
+    this.slides.forEach((slide, idx) => {
+      const isActive = idx === this.currentIndex;
+      slide.classList.toggle('active', isActive);
+      slide.setAttribute('aria-hidden', isActive ? 'false' : 'true');
+    });
+
+    this.dots.forEach((dot, idx) => {
+      dot.classList.toggle('active', idx === this.currentIndex);
+    });
+
+    this.resetTimer();
+  },
+
+  next() {
+    this.goTo(this.currentIndex + 1);
+  },
+
+  prev() {
+    this.goTo(this.currentIndex - 1);
+  },
+
+  startAutoPlay() {
+    this.stopAutoPlay();
+    this.autoPlayTimer = setInterval(() => {
+      if (!this.isPaused) {
+        this.next();
+      }
+    }, this.autoPlayInterval);
+  },
+
+  stopAutoPlay() {
+    if (this.autoPlayTimer) {
+      clearInterval(this.autoPlayTimer);
+      this.autoPlayTimer = null;
+    }
+  },
+
+  resetTimer() {
+    this.startAutoPlay();
+  },
+
+  pause() {
+    this.isPaused = true;
+  },
+
+  resume() {
+    this.isPaused = false;
+  }
+};
+
+// Initialize device manager and hero slider when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    DeviceManager.init();
+    HeroSlider.init();
+  });
+} else {
+  DeviceManager.init();
+  HeroSlider.init();
 }
 

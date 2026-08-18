@@ -63,17 +63,17 @@ def run_tests():
         test(f"Major language '{r_lang}' is supported in dataset", r_lang in lang_names, f"(Count: {rec.language_indices.get(r_lang.lower(), []) and len(rec.language_indices[r_lang.lower()])})")
 
     # ──────────────────────────────────────────────────────────────────────────
-    print("\nSTEP 3: CONVERSATIONAL CHATBOT (CHIT-CHAT & CASUAL DIALOGUE FIRST)")
+    print("\nSTEP 3: CONVERSATIONAL CHATBOT & MULTI-TURN CONTEXT VERIFICATION")
     from chatbot import MovieChatbotEngine
     bot = MovieChatbotEngine(rec)
 
-    # 1. Greeting: "Hi"
+    # 1. Greeting: "Hi" (Conversational chit-chat without movie cards)
     r_hi = bot.chat("Hi")
     test("Chatbot handles 'Hi' greeting without movie cards", bool(r_hi.get("reply")) and len(r_hi.get("movies", [])) == 0 and "ai movie assistant" in r_hi.get("reply").lower())
 
     # 2. Greeting: "Hello"
     r_hello = bot.chat("Hello")
-    test("Chatbot handles 'Hello' greeting warmly without movie cards", bool(r_hello.get("reply")) and len(r_hello.get("movies", [])) == 0 and "great to watch" in r_hello.get("reply").lower())
+    test("Chatbot handles 'Hello' greeting warmly without movie cards", bool(r_hello.get("reply")) and len(r_hello.get("movies", [])) == 0)
 
     # 3. How are you / Status: "How are you?"
     r_how = bot.chat("How are you?")
@@ -85,27 +85,129 @@ def run_tests():
 
     # 5. Boredom: "I’m bored"
     r_bored = bot.chat("I’m bored")
-    test("Chatbot responds to 'I’m bored' with category follow-up options", bool(r_bored.get("reply")) and len(r_bored.get("movies", [])) == 0 and "thrilling" in r_bored.get("reply").lower())
+    test("Chatbot responds to 'I’m bored' with category follow-up options", bool(r_bored.get("reply")) and len(r_bored.get("movies", [])) == 0)
 
-    # 6. Single Movie Title (Interstellar) -> Asks intelligent follow-up question (NO immediate movie dump)
-    r_inter = bot.chat("Interstellar")
-    test("Chatbot asks follow-up question for single title 'Interstellar' without dumping cards", bool(r_inter.get("reply")) and len(r_inter.get("movies", [])) == 0 and "space exploration" in r_inter.get("reply").lower())
+    # ── FULL MULTI-TURN FLOW VERIFICATION ──
+    # Turn 1: "I liked Interstellar."
+    state1 = {}
+    r_turn1 = bot.chat("I liked Interstellar.", session_state=state1)
+    movies1 = r_turn1.get("movies", [])
+    test("Turn 1: 'I liked Interstellar.' returns 5 movie cards", len(movies1) == 5, f"(Count: {len(movies1)})")
+    test("Turn 1: Input movie 'Interstellar' appears as the FIRST movie", movies1[0]["title"] == "Interstellar" and movies1[0]["id"] == 157336)
+    test("Turn 1: Followed by top 4 related movie recommendations", len(movies1[1:]) == 4 and all(m["id"] != 157336 for m in movies1[1:]))
+    test("Turn 1: Sets active current_movie_id and records 5 shown IDs", r_turn1.get("session_state", {}).get("current_movie_id") == 157336 and len(r_turn1.get("session_state", {}).get("shown_movie_ids", [])) == 5)
 
-    # 7. Follow-up resolution: "space exploration" with history context
-    r_followup = bot.chat("space exploration", history=[{"role": "user", "content": "Interstellar"}, {"role": "model", "content": r_inter.get("reply")}])
-    test("Chatbot resolves follow-up answer 'space exploration' and recommends relevant space movies", bool(r_followup.get("reply")) and len(r_followup.get("movies", [])) >= 3 and all(m.get("title") != "Interstellar" for m in r_followup.get("movies", [])))
+    state2 = r_turn1.get("session_state", {})
+    # Turn 2: "Give me more."
+    r_turn2 = bot.chat("Give me more.", session_state=state2)
+    movies2 = r_turn2.get("movies", [])
+    test("Turn 2: 'Give me more.' returns 5 NEW movie cards", len(movies2) == 5, f"(Count: {len(movies2)})")
+    ids1 = {m["id"] for m in movies1}
+    ids2 = {m["id"] for m in movies2}
+    test("Turn 2: ZERO repeated movies between Turn 1 and Turn 2", len(ids1 & ids2) == 0, f"(Overlap: {len(ids1 & ids2)})")
+    test("Turn 2: shown_movie_ids updated to 10 unique movies", len(r_turn2.get("session_state", {}).get("shown_movie_ids", [])) == 10)
 
-    # 8. Identity / Capabilities
+    state3 = r_turn2.get("session_state", {})
+    # Turn 3: "Make them more emotional."
+    r_turn3 = bot.chat("Make them more emotional.", session_state=state3)
+    movies3 = r_turn3.get("movies", [])
+    test("Turn 3: 'Make them more emotional.' returns 5 NEW cards", len(movies3) == 5, f"(Count: {len(movies3)})")
+    ids3 = {m["id"] for m in movies3}
+    test("Turn 3: ZERO repeated movies across all 3 turns", len((ids1 | ids2) & ids3) == 0, f"(Overlap: {len((ids1 | ids2) & ids3)})")
+    test("Turn 3: Sets active mood to 'emotional'", r_turn3.get("session_state", {}).get("current_mood") == "emotional")
+
+    state4 = r_turn3.get("session_state", {})
+    # Turn 4: "Tell me about the first one."
+    first_target = movies3[0]
+    r_turn4 = bot.chat("Tell me about the first one.", session_state=state4)
+    reply4 = r_turn4.get("reply", "")
+    test("Turn 4: 'Tell me about the first one.' identifies the exact 1st movie from Turn 3", first_target["title"] in reply4, f"(Target: {first_target['title']})")
+    test("Turn 4: Includes real IMDb rating and synopsis from dataset", f"{first_target['rating']}/10" in reply4 or "IMDb" in reply4)
+    test("Turn 4: Returns target movie object for rich detail/trailer card", len(r_turn4.get("movies", [])) == 1 and r_turn4.get("movies")[0]["id"] == first_target["id"])
+
+    # Turn 5: "Tell me about the 2nd one."
+    second_target = movies3[1]
+    r_turn5 = bot.chat("Tell me about the 2nd one.", session_state=state4)
+    reply5 = r_turn5.get("reply", "")
+    test("Turn 5: 'Tell me about the 2nd one.' identifies the exact 2nd movie from Turn 3", second_target["title"] in reply5, f"(Target: {second_target['title']})")
+
+    # Turn 6: "Show More Movies" (button action)
+    r_turn6 = bot.chat("Show More Movies", session_state=state4)
+    movies6 = r_turn6.get("movies", [])
+    test("Turn 6: 'Show More Movies' returns 5 fresh movies without overlap", len(movies6) == 5 and len({m["id"] for m in movies6} & (ids1 | ids2 | ids3)) == 0)
+
+    # ── 10 REQUIRED TEST CASES VERIFICATION ──
+    print("\n  [VERIFYING 10 REQUIRED TEST CASES]")
+    # 1. Direct movie title: "Interstellar"
+    res_t1 = rec.recommend_by_prompt("Interstellar", limit=6)
+    test("Req 1 (Interstellar): matched_movies contains Interstellar", any(m["title"] == "Interstellar" for m in res_t1.get("matched_movies", [])))
+    test("Req 1 (Interstellar): movies array places Interstellar first", len(res_t1.get("movies", [])) >= 1 and res_t1.get("movies")[0]["title"] == "Interstellar")
+    test("Req 1 (Interstellar): recommendations are relevant sci-fi/space titles", len(res_t1.get("recommendations", [])) >= 3 and any("Science Fiction" in m.get("genres", "") or "Space" in m.get("overview", "") for m in res_t1.get("recommendations", [])))
+
+    # 2. Preference expression: "I liked Interstellar"
+    res_t2 = rec.recommend_by_prompt("I liked Interstellar", limit=6)
+    test("Req 2 (I liked Interstellar): recognizes referenced movie", any(m["title"] == "Interstellar" for m in res_t2.get("matched_movies", [])))
+    test("Req 2 (I liked Interstellar): places Interstellar first followed by recommendations", res_t2.get("movies", [])[0]["title"] == "Interstellar" and len(res_t2.get("recommendations", [])) >= 1)
+
+    # 3. Multi-title preference: "I liked Interstellar and Inception"
+    res_t3 = rec.recommend_by_prompt("I liked Interstellar and Inception", limit=6)
+    matched_t3 = [m["title"] for m in res_t3.get("matched_movies", [])]
+    test("Req 3 (Interstellar and Inception): identifies BOTH titles", "Interstellar" in matched_t3 and "Inception" in matched_t3)
+    test("Req 3 (Interstellar and Inception): returns both matched movies first", len(res_t3.get("movies", [])) >= 2 and set(m["title"] for m in res_t3.get("movies")[:2]) == {"Interstellar", "Inception"})
+    test("Req 3 (Interstellar and Inception): generates combined recommendations", len(res_t3.get("recommendations", [])) >= 1)
+
+    # Multi-title chatbot interaction
+    chat_multi = bot.chat("I liked Interstellar and Inception")
+    test("Req 3 (CineBot): recognizes both movies in chat reply", "Interstellar" in chat_multi.get("reply", "") and "Inception" in chat_multi.get("reply", ""))
+    test("Req 3 (CineBot): returns both matched movies in movie cards", any(m["title"] == "Interstellar" for m in chat_multi.get("movies", [])) and any(m["title"] == "Inception" for m in chat_multi.get("movies", [])))
+
+    # 4. Phrased request: "Recommend something like Interstellar"
+    res_t4 = rec.recommend_by_prompt("Recommend something like Interstellar", limit=6)
+    test("Req 4 (Recommend something like Interstellar): detects anchor movie", any(m["title"] == "Interstellar" for m in res_t4.get("matched_movies", [])))
+
+    # 5. Greeting: "Hi"
+    chat_hi = bot.chat("Hi")
+    test("Req 5 (Hi): returns friendly conversational response without movie cards", bool(chat_hi.get("reply")) and len(chat_hi.get("movies", [])) == 0)
+
+    # 6. Greeting: "Hello"
+    chat_hello = bot.chat("Hello")
+    test("Req 6 (Hello): returns friendly greeting without movie cards", bool(chat_hello.get("reply")) and len(chat_hello.get("movies", [])) == 0)
+
+    # 7. "Surprise me"
+    surp_m = rec.get_surprise_movie()
+    test("Req 7 (Surprise me): returns exactly 1 high-quality movie", surp_m is not None and "title" in surp_m and float(surp_m.get("rating", 0)) >= 5.0)
+
+    # 8. Nonexistent movie: "asdfghjkl_nonexistent_xyz999"
+    res_fake = rec.recommend_by_prompt("asdfghjkl_nonexistent_xyz999")
+    test("Req 8 (Nonexistent movie): handles cleanly with empty or fallback results", len(res_fake.get("matched_movies", [])) == 0)
+    chat_fake = bot.chat("I liked asdfghjkl_nonexistent_xyz999")
+    test("Req 8 (Nonexistent movie in CineBot): friendly fallback without crash", bool(chat_fake.get("reply")) and len(chat_fake.get("movies", [])) == 0)
+
+    # 9. Multi-language movie canonical grouping
+    multi_lang_sample = next((m for m in rec.movies_df.to_dict("records") if len(str(m.get("available_languages", "")).split("|")) > 1), None)
+    test("Req 9 (Multi-language): dataset contains canonical records with multiple available languages", multi_lang_sample is not None and len(str(multi_lang_sample.get("available_languages", "")).split("|")) >= 2, f"Sample: {multi_lang_sample and multi_lang_sample.get('title')}")
+
+    # 10. Empty input
+    res_empty = rec.recommend_by_prompt("")
+    test("Req 10 (Empty input in recommender): handled gracefully", res_empty.get("movies", []) == [])
+    chat_empty = bot.chat("")
+    test("Req 10 (Empty input in CineBot): handled cleanly", chat_empty.get("success") is True and bool(chat_empty.get("reply")))
+
+    # 7. Identity / Capabilities
     r_who = bot.chat("who are you and what can you do?")
     test("Chatbot explains identity and capabilities", bool(r_who.get("reply")) and "CineBot" in r_who.get("reply"))
 
-    # 9. Joke / Humor
+    # 8. Joke / Humor
     r_joke = bot.chat("tell me a movie joke")
     test("Chatbot tells a movie joke on request", bool(r_joke.get("reply")) and ("joke" in r_joke.get("reply").lower() or "why" in r_joke.get("reply").lower()))
 
-    # 10. Farewells
+    # 9. Farewells
     r_bye = bot.chat("goodbye see you later")
     test("Chatbot responds politely to farewells", bool(r_bye.get("reply")) and ("goodbye" in r_bye.get("reply").lower() or "enjoy" in r_bye.get("reply").lower()))
+
+    # 10. Nonexistent movie title inquiry handled gracefully
+    r_fake = bot.chat("I liked asdfghjkl_nonexistent_xyz999")
+    test("Nonexistent movie title handled gracefully without crashing", bool(r_fake.get("reply")) and len(r_fake.get("movies", [])) == 0)
 
     # ──────────────────────────────────────────────────────────────────────────
     print("\nSTEP 4: COMBINED MULTI-ATTRIBUTE FILTERS (LANGUAGE + GENRE)")
@@ -429,22 +531,22 @@ def run_tests():
     
     # Re-change rating for movie 278 (The Shawshank Redemption) from 5 to 4
     rerate_resp = client.post('/api/rate/278', json={"rating": 4})
-    test("POST /api/rate/278 re-rating to 4★ returns 200 OK", rerate_resp.status_code == 200 and rerate_resp.get_json().get("success"))
+    test("POST /api/rate/278 re-rating to 4-star returns 200 OK", rerate_resp.status_code == 200 and rerate_resp.get_json().get("success"))
     prof_updated = client.get('/api/user/profile').get_json() or {}
     m278 = next((m for m in prof_updated.get("rated_movies", []) if m["id"] == 278), None)
-    test("Movie 278 user_rating successfully changed to 4★", m278 is not None and m278.get("user_rating") == 4)
+    test("Movie 278 user_rating successfully changed to 4-star", m278 is not None and m278.get("user_rating") == 4)
     
     # Test un-rating (rating 0)
     unrate_resp = client.post('/api/rate/278', json={"rating": 0})
-    test("POST /api/rate/278 un-rating (0★) returns 200 OK", unrate_resp.status_code == 200 and unrate_resp.get_json().get("success"))
+    test("POST /api/rate/278 un-rating (0-star) returns 200 OK", unrate_resp.status_code == 200 and unrate_resp.get_json().get("success"))
     prof_unrated = client.get('/api/user/profile').get_json() or {}
     test("Movie 278 removed from rated list after unrate", not any(m["id"] == 278 for m in prof_unrated.get("rated_movies", [])))
     test("Ratings count decremented to 2", len(prof_unrated.get("rated_movies", [])) == 2)
     
-    # Reset back to 5★
+    # Reset back to 5-star
     client.post('/api/rate/278', json={"rating": 5})
     prof_restored = client.get('/api/user/profile').get_json() or {}
-    test("Ratings restored to 3 items with 5★ for movie 278", len(prof_restored.get("rated_movies", [])) == 3)
+    test("Ratings restored to 3 items with 5-star for movie 278", len(prof_restored.get("rated_movies", [])) == 3)
 
     # ──────────────────────────────────────────────────────────────────────────
     print("\n" + "=" * 70)

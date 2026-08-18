@@ -1,17 +1,13 @@
 """
-chatbot.py — Intelligent Conversational AI Movie Assistant (CineBot)
+chatbot.py — Intelligent Multi-Turn Conversational AI Movie Assistant (CineBot)
 Behaves like a genuine, interactive AI movie companion:
-  1. Understands general conversation FIRST (greetings, chit-chat, how are you, gratitude, boredom, mood).
-  2. Single movie title inquiries: Does NOT immediately dump recommendations; acknowledges enthusiastically
-     and asks intelligent follow-up questions (e.g. space exploration, science, emotional story, mind-bending).
-  3. Context-aware follow-up resolution: Remembers conversation history and recommends matching movies
-     based on the user's answer to the follow-up question.
-  4. Direct complete requests: Instantly recommends movies for complete queries:
-     - Cast: "Movies with Tom Hanks", "Leonardo DiCaprio movies", "Prabhas movies"
-     - Combined filters: "Telugu horror movies", "Hindi action movies", "Malayalam comedy"
-     - Explicit similarity requests: "Movies like Interstellar", "Recommend movies similar to Inception"
-  5. Dynamic tone adaptation: Informal (buddy) & Formal (concierge) modes.
-  6. Verified IMDb 0–10 rating scale presentation and HD trailer links.
+  1. Real multi-turn conversation: Maintains session state (current movie, genre, mood, shown IDs, latest recommendations).
+  2. Non-repeating movie pagination: Understands "Give me more" / "Show More Movies" and pulls next unseen set.
+  3. Contextual mood & genre follow-ups: Understands "Make them more emotional", "Make them funnier", "More intense", etc.
+  4. Ordinal movie details: Understands "Tell me about the first one", "Tell me about the 2nd one", etc., using real dataset data.
+  5. Initial movie recommendations: "I liked Interstellar" immediately recommends 5 real movies from the ML recommendation engine.
+  6. Grounded in real TMDB dataset with verified IMDb 0–10 ratings and instant trailer links.
+  7. Natural chit-chat, jokes, trivia, opinions, and error handling without leaking keys or errors.
 """
 
 import os
@@ -63,6 +59,51 @@ MOVIE_RIDDLES = [
     ("🎬 **Guess the Movie:** A massive ocean liner strikes an iceberg on its maiden voyage while an artist and an aristocrat fall in love. What movie is it?", "Titanic (1997)"),
     ("🎬 **Guess the Movie:** Two legendary freedom fighters in 1920s India forge an unbreakable bond before discovering each other's secret identities. What movie is it?", "RRR (2022)")
 ]
+
+MOOD_MAP = {
+    "emotional": {
+        "label": "Deep & Emotional",
+        "genres": ["Drama", "Romance", "History"],
+        "keywords": ["emotional", "heartbreaking", "poignant", "father", "daughter", "tears", "loss", "devotion", "grief", "love", "touching"],
+        "reply_intro": "Sure! Here are some more emotional options:"
+    },
+    "intense": {
+        "label": "Intense & Thrilling",
+        "genres": ["Thriller", "Action", "Crime", "Horror", "War"],
+        "keywords": ["thriller", "suspense", "danger", "heist", "adrenaline", "chase", "explosive", "gritty", "dark"],
+        "reply_intro": "Got it! Here are more high-intensity, thrilling options:"
+    },
+    "mind-bending": {
+        "label": "Mind-Bending & Sci-Fi",
+        "genres": ["Science Fiction", "Mystery", "Fantasy", "Thriller"],
+        "keywords": ["time", "space", "dimension", "reality", "quantum", "puzzle", "twist", "psychological", "dream", "memory"],
+        "reply_intro": "Brain-twisters incoming! Here are mind-bending and cerebral picks:"
+    },
+    "feel-good": {
+        "label": "Feel-Good & Comedy",
+        "genres": ["Comedy", "Animation", "Family", "Music", "Romance"],
+        "keywords": ["funny", "hilarious", "laugh", "humor", "warm", "cheerful", "uplifting", "lighthearted"],
+        "reply_intro": "Let's lighten the mood! Here are top feel-good and comedy options:"
+    },
+    "scary": {
+        "label": "Scary & Horror",
+        "genres": ["Horror", "Thriller", "Mystery"],
+        "keywords": ["scary", "horror", "creepy", "ghost", "haunted", "supernatural", "fear", "dark"],
+        "reply_intro": "Prepare for chills! Here are spine-tingling and dark options:"
+    },
+    "romantic": {
+        "label": "Romantic & Love",
+        "genres": ["Romance", "Drama"],
+        "keywords": ["romance", "love", "couple", "passion", "sweetheart", "relationship"],
+        "reply_intro": "Heartwarming love stories coming up! Here are romantic options:"
+    },
+    "action": {
+        "label": "Action-Packed",
+        "genres": ["Action", "Adventure"],
+        "keywords": ["action", "explosive", "superhero", "combat", "fight", "stunts"],
+        "reply_intro": "High-octane blockbusters ready! Here are action-packed options:"
+    }
+}
 
 
 class MovieChatbotEngine:
@@ -124,172 +165,149 @@ class MovieChatbotEngine:
             return "formal"
         return "balanced"
 
-    # ── CONVERSATION CONTEXT EXTRACTION ───────────────────────────────────────
-    def _extract_history_context(self, history):
+    # ── SESSION STATE INITIALIZATION & NORMALIZATION ─────────────────────────
+    def _normalize_session_state(self, state, context_movie_id=None):
+        """Ensures session_state has all necessary fields with correct types"""
+        if not isinstance(state, dict):
+            state = {}
+
+        normalized = {
+            "current_movie_id": state.get("current_movie_id"),
+            "current_movie_title": state.get("current_movie_title"),
+            "current_genres": list(state.get("current_genres", []) or []),
+            "current_mood": state.get("current_mood"),
+            "current_cast": state.get("current_cast"),
+            "current_language": state.get("current_language"),
+            "shown_movie_ids": list(state.get("shown_movie_ids", []) or []),
+            "latest_recommended_movies": list(state.get("latest_recommended_movies", []) or []),
+            "last_intent": state.get("last_intent")
+        }
+
+        # Override with context_movie_id if supplied from detail page
+        if context_movie_id and not normalized["current_movie_id"]:
+            m = self.rec.get_movie_by_id(context_movie_id)
+            if m:
+                normalized["current_movie_id"] = m["id"]
+                normalized["current_movie_title"] = m["title"]
+                normalized["current_genres"] = [g.strip() for g in str(m.get("genres", "")).split("|") if g.strip()]
+
+        return normalized
+
+    # ── CONTEXT & INTENT RESOLVER ────────────────────────────────────────────
+    def _detect_ordinal_index(self, text):
         """
-        Inspects recent conversation history to extract active context:
-        - last_followup_movie: Name of movie the bot asked a follow-up question about
-        - last_boredom_prompt: Boolean indicating if bot asked for a mood category
+        Parses ordinal references to target items from latest results:
+        e.g. "first one", "1st movie", "second", "third", "4th", "last one"
+        Returns integer index (0, 1, 2, 3, 4, -1) or None.
         """
-        if not history or not isinstance(history, list):
-            return {}
+        t = text.lower()
+        if re.search(r'\b(first(\s+one|\s+movie)?|1st(\s+one|\s+movie)?|number\s+1|#1|the\s+1st)\b', t):
+            return 0
+        if re.search(r'\b(second(\s+one|\s+movie)?|2nd(\s+one|\s+movie)?|number\s+2|#2|the\s+2nd)\b', t):
+            return 1
+        if re.search(r'\b(third(\s+one|\s+movie)?|3rd(\s+one|\s+movie)?|number\s+3|#3|the\s+3rd)\b', t):
+            return 2
+        if re.search(r'\b(fourth(\s+one|\s+movie)?|4th(\s+one|\s+movie)?|number\s+4|#4|the\s+4th)\b', t):
+            return 3
+        if re.search(r'\b(fifth(\s+one|\s+movie)?|5th(\s+one|\s+movie)?|number\s+5|#5|the\s+5th)\b', t):
+            return 4
+        if re.search(r'\b(last(\s+one|\s+movie)?|final(\s+one|\s+movie)?)\b', t):
+            return -1
+        return None
 
-        context = {}
-        for h in reversed(history[-6:]):
-            content = str(h.get("content") or h.get("reply") or h.get("message") or "")
-            content_lower = content.lower()
+    def _detect_mood_shift(self, text):
+        """
+        Detects mood shift intents:
+        e.g. "make them more emotional", "more funny", "more intense", "make them scarier"
+        Returns mood key ('emotional', 'intense', 'mind-bending', 'feel-good', 'scary', 'romantic', 'action') or None.
+        """
+        t = text.lower()
+        if re.search(r'\b(emotional|sad|tearjerker|drama|heartwarming|touching|cry|tear|feelings)\b', t):
+            return "emotional"
+        if re.search(r'\b(intense|thrilling|thriller|suspense|dark|gritty|edge\s+of\s+seat)\b', t):
+            return "intense"
+        if re.search(r'\b(mind.*bending|mindbending|sci-fi|scifi|cerebral|twist|time\s+travel|dimensions|brain.*twister|complex)\b', t):
+            return "mind-bending"
+        if re.search(r'\b(funnier|funny|comedy|laugh|humor|feel.*good|lighthearted|chill)\b', t):
+            return "feel-good"
+        if re.search(r'\b(scarier|scary|horror|creepy|ghost|spooky|haunted|frightening)\b', t):
+            return "scary"
+        if re.search(r'\b(romantic|romance|love|love\s+story|romcom)\b', t):
+            return "romantic"
+        if re.search(r'\b(action|action.*packed|explosive|superhero|fight|adrenaline)\b', t):
+            return "action"
+        return None
 
-            # Check if bot asked a boredom follow-up question
-            if "funny, thrilling, romantic, mysterious" in content_lower:
-                context["pending_boredom"] = True
+    # ── MOVIE EXTRACTION FROM NATURAL TEXT ───────────────────────────────────
+    def _extract_movie_title_from_text(self, text):
+        """
+        Extracts candidate movie title from user phrasing like:
+        - "I liked Interstellar"
+        - "I love Inception"
+        - "Movies like The Dark Knight"
+        - "Recommend movies similar to Titanic"
+        - "What about RRR?"
+        - "Interstellar"
+        """
+        raw = text.strip()
+        t_clean = re.sub(r'[^a-zA-Z0-9\s:’\'-]', '', raw).strip()
 
-            # Check if bot asked a movie follow-up question
-            # Pattern: "What did you enjoy most about <Movie> —" or "What hooked you the most about <Movie>"
-            m_followup = re.search(r'what\s+(did\s+you\s+enjoy|hooked\s+you|made\s+it\s+stand\s+out|touched\s+you|was\s+your\s+favorite).*about\s+([A-Za-z0-9\s:’\'-]+?)(—|\?|\.|\n)', content, re.IGNORECASE)
-            if m_followup and "pending_followup_movie" not in context:
-                m_title = m_followup.group(2).strip().strip('*').strip()
-                context["pending_followup_movie"] = m_title
+        # Remove leading phrasing patterns
+        pref_patterns = [
+            r'^(i\s+(really\s+)?(liked|like|loved|love|watched|enjoyed|am\s+a\s+fan\s+of|prefer)\s+)',
+            r'^(recommend(\s+me)?\s+(some\s+)?movies?\s+(similar\s+to|like)\s+)',
+            r'^(suggest(\s+me)?\s+(some\s+)?movies?\s+(similar\s+to|like)\s+)',
+            r'^(movies?\s+(similar\s+to|like)\s+)',
+            r'^(films?\s+(similar\s+to|like)\s+)',
+            r'^(tell\s+me\s+about\s+)',
+            r'^(what\s+do\s+you\s+think\s+of\s+)',
+            r'^(what\s+about\s+)'
+        ]
 
-            # Check for bold movie title in previous turns
-            if "last_movie_title" not in context:
-                bold_matches = re.findall(r'\*\*([A-Za-z0-9\s:’\'-]+?)\*\*', content)
-                for cand in bold_matches:
-                    cand_clean = cand.strip()
-                    if cand_clean.lower() not in {"cinebot", "informal mode activated", "formal mode activated", "imdb rating", "genres", "overview"}:
-                        context["last_movie_title"] = cand_clean
-                        break
+        candidate = t_clean
+        for pat in pref_patterns:
+            candidate = re.sub(pat, '', candidate, flags=re.IGNORECASE).strip()
 
-        return context
+        # Remove trailing punctuation / noise
+        candidate = re.sub(r'\s+(movie|film|films|movies)$', '', candidate, flags=re.IGNORECASE).strip()
+        return candidate if candidate else t_clean
 
-    def chat(self, message, history=None, user=None, context_movie_id=None):
+    # ── MAIN CHAT HANDLER ───────────────────────────────────────────────────
+    def chat(self, message, history=None, user=None, context_movie_id=None, session_state=None):
         """
         Main chat handler.
-        Understands general conversation first, asks follow-up questions for single movie titles,
-        remembers context, and provides direct recommendations for complete requests.
+        Understands general conversation first, asks/answers follow-ups,
+        remembers context across multiple turns, paginates without duplicates,
+        and provides direct recommendations grounded in the 60,000+ dataset.
         """
         msg = str(message or "").strip()
+        state = self._normalize_session_state(session_state, context_movie_id)
         tone = self.detect_tone(msg, history)
-        name = user.get("name") if user else ("my friend" if tone == "informal" else "there")
 
         if not msg:
             reply = (
-                f"Hi! 👋 Welcome! I’m your AI movie assistant.\n\n"
-                f"What kind of movie are you in the mood for today? You can tell me a movie you liked, a genre, an actor, or how you're feeling!"
+                "Hi! 👋 Welcome! I’m your AI movie assistant.\n\n"
+                "What kind of movie are you in the mood for today? You can tell me a movie you liked, a genre, an actor, or how you're feeling!"
             )
             return {
                 "success": True,
                 "reply": reply,
                 "movies": [],
                 "suggested_prompts": ["🔥 Action Movies", "🌌 Sci-Fi Adventure", "😂 Comedy Hits", "🍿 Surprise Me"],
+                "session_state": state,
                 "mode": "greeting",
                 "tone": tone
             }
 
-        # If Gemini API key is configured, use LLM with grounded instructions
-        if self.api_key:
-            try:
-                llm_res = self._call_gemini(msg, history, user, tone)
-                if llm_res and llm_res.get("success"):
-                    return llm_res
-            except Exception as e:
-                print(f"[CineBot] Gemini API fallback triggered: {e}")
+        # Multi-turn local engine
+        return self._conversational_pipeline(msg, history, user, tone, state)
 
-        # Interactive Conversational AI Assistant & Hybrid Recommender Engine
-        return self._local_fallback_chat(msg, history, user, context_movie_id, tone)
-
-    # ── 1. Google Gemini LLM Integration ──────────────────────────────────────
-    def _call_gemini(self, message, history=None, user=None, tone="balanced"):
-        """Calls Gemini API with interactive AI movie assistant instructions and dataset grounding"""
-        local_search = self.rec.recommend_by_prompt(message, limit=6)
-        candidates = local_search.get("movies", [])
-        candidate_summary = []
-        for m in candidates[:6]:
-            candidate_summary.append({
-                "id": m.get("id"),
-                "title": m.get("title"),
-                "rating": m.get("rating"),
-                "imdb_rating": f"{m.get('rating')}/10",
-                "year": m.get("year"),
-                "language": m.get("language"),
-                "genres": m.get("genres"),
-                "overview": (m.get("overview") or "")[:150]
-            })
-
-        system_instruction = (
-            "You are an interactive, intelligent AI movie assistant (CineBot). "
-            "You understand general conversation FIRST rather than treating every message as a movie search query.\n"
-            "Key Conversational Rules:\n"
-            "1. If the user greets (Hi, Hello, How are you), greet warmly and ask what they feel like watching without returning movie cards.\n"
-            "2. If the user gives ONLY a movie name (e.g. 'Interstellar', 'Inception'), DO NOT immediately recommend movies. Ask an intelligent follow-up question about what aspect they liked (e.g. space exploration, science, emotional story, or mind-bending concepts).\n"
-            "3. If the user gives a complete request (e.g. 'Telugu horror movies', 'Movies with Tom Hanks', 'Movies like Interstellar'), directly recommend matching movies.\n"
-            "4. Maintain conversation context and remember what was discussed in previous messages.\n"
-            "5. Always format ratings on the IMDb 0–10 scale (e.g. ⭐ 8.4/10) and bold movie titles."
-        )
-
-        user_context = f"User profile: {user.get('name') if user else 'Guest'}. "
-        dataset_context = f"Top matching movies in local database: {json.dumps(candidate_summary)}. "
-        prompt_text = f"{system_instruction}\n\n{user_context}\n{dataset_context}\nUser Question: {message}\n\nPlease respond naturally and conversationally."
-
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent?key={self.api_key}"
-        payload = {
-            "contents": [{"parts": [{"text": prompt_text}]}],
-            "generationConfig": {
-                "temperature": 0.70,
-                "maxOutputTokens": 650,
-            }
-        }
-
-        try:
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=8) as response:
-                if response.status == 200:
-                    data = json.loads(response.read().decode("utf-8"))
-                    reply_text = data["candidates"][0]["content"]["parts"][0]["text"]
-                    is_rec_query = bool(
-                        re.search(r'\b(recommend|suggest|similar\s+to|movies\s+like|movies\s+with|starring|horror|action|comedy|thriller|drama|sci-fi|telugu|hindi|tamil|malayalam|kannada)\b', message.lower())
-                    )
-                    matched_movies = candidates[:5] if (candidates and is_rec_query) else []
-                    return {
-                        "success": True,
-                        "reply": reply_text,
-                        "movies": matched_movies,
-                        "suggested_prompts": self._generate_followup_prompts(message, matched_movies, tone),
-                        "mode": "gemini_ai",
-                        "tone": tone
-                    }
-        except Exception as e:
-            print(f"[CineBot] Gemini API request failed: {e}")
-        return None
-
-    # ── 2. Interactive Local Conversational AI Assistant ──────────────────────
-    def _local_fallback_chat(self, message, history=None, user=None, context_movie_id=None, tone="balanced"):
-        """
-        High-precision interactive AI movie assistant:
-        - Understands general conversation first
-        - Asks intelligent follow-up questions for single movie titles
-        - Resolves follow-up answers using conversation context
-        - Directly fulfills complete recommendation requests
-        """
-        raw_msg = str(message or "").strip()
-        q_lower = raw_msg.lower()
+    # ── CORE MULTI-TURN CONVERSATIONAL PIPELINE ──────────────────────────────
+    def _conversational_pipeline(self, raw_msg, history, user, tone, state):
+        q_lower = raw_msg.lower().strip()
         q_clean = re.sub(r'[^a-zA-Z0-9\s]', ' ', q_lower).strip()
         words = q_clean.split()
         word_count = len(words)
-
-        # Step 0: Extract history context
-        history_ctx = self._extract_history_context(history)
-
-        # Step 1: Entity extraction & normalization
-        entities = self.rec.normalize_and_extract_entities(raw_msg)
-        detected_lang = entities.get("detected_language")
-        detected_genres = entities.get("detected_genres", [])
-        detected_cast = entities.get("detected_cast")
-        typo_corrections = entities.get("corrections", {})
 
         user_display_name = user.get("name") if user else None
         if tone == "informal":
@@ -299,7 +317,7 @@ class MovieChatbotEngine:
         else:
             name = user_display_name if user_display_name else "there"
 
-        # ── 1. EXPLICIT PERSONA SWITCH COMMANDS ───────────────────────────────
+        # ── 1. PERSONA SWITCH COMMANDS ────────────────────────────────────────
         if re.search(r'\b(speak|talk|be|switch\s+to|act)\s+(informally|casual|casually|like\s+a\s+friend|like\s+a\s+bro|like\s+my\s+bro|informal|chill)\b', q_lower):
             return {
                 "success": True,
@@ -308,6 +326,7 @@ class MovieChatbotEngine:
                          f"What crazy film or genre are we diving into today? Throw anything at me — hype action, mind-bending sci-fi, or late-night comedies! 🍿🔥",
                 "movies": [],
                 "suggested_prompts": ["🔥 Best Action Movies", "🌌 Movies like Interstellar", "🍿 Surprise Me Bro", "😂 Drop a Joke"],
+                "session_state": state,
                 "mode": "persona_switch",
                 "tone": "informal"
             }
@@ -320,37 +339,21 @@ class MovieChatbotEngine:
                          f"Please advise how I may assist your cinematic exploration — whether curated by auteur, genre, linguistic tradition, or verified IMDb metrics.",
                 "movies": [],
                 "suggested_prompts": ["⭐ Top Rated Masterpieces", "🎬 Acclaimed Telugu Cinema", "🎭 Psychological Dramas", "📜 Model Architecture"],
+                "session_state": state,
                 "mode": "persona_switch",
                 "tone": "formal"
             }
 
-        # ── 2. GENERAL CONVERSATION FIRST (GREETINGS & CHIT-CHAT) ─────────────
-        # Character repeat reduction & slang normalization
+        # ── 2. GENERAL CONVERSATION (GREETINGS, CHIT-CHAT, JOKES, TRIVIA) ──────
         q_reduced = re.sub(r'([a-zA-Z])\1{2,}', r'\1', q_lower)
-        q_norm = re.sub(r'^h+i+$', 'hi', q_reduced)
-        q_norm = re.sub(r'^h+e+y+$', 'hey', q_norm)
-        q_norm = re.sub(r'^h+e+l+o+$', 'hello', q_norm)
-        q_norm = re.sub(r'^y+o+$', 'yo', q_norm)
-        q_norm = re.sub(r'^s+u+p+$', 'sup', q_norm)
-        q_norm = re.sub(r'^w+a+s+u+p+$', 'wassup', q_norm)
-        q_norm = re.sub(r'^h+o+l+a+$', 'hola', q_norm)
-
-        # A. Greetings: "hiiii", "hello", "hey", "yo", "sup", "howdy", "namaste", "good morning", etc.
         is_greeting = bool(
-            re.match(r'^(h+i+|h+e+y+|h+e+l+o+|y+o+|s+u+p+|w+a+s+u+p+|h+o+l+a+|n+a+m+a+s+t+e+|greetings|howdy|heya|hiya|good\s*(morning|evening|afternoon|day)|bonjour|aloha)\b', q_lower) or
-            re.match(r'^(hi|hey|hello|yo|sup|wassup|hola|namaste|greetings|howdy|heya|hiya|good morning|good evening|good afternoon|good day)\b', q_norm) or
-            re.match(r'^(hi|hey|hello|yo|sup|wassup|hola|namaste)\b', q_reduced)
+            re.match(r'^(hi|hey|hello|yo|sup|wassup|hola|namaste|greetings|howdy|heya|hiya|good morning|good evening|good afternoon|good day)\b', q_reduced) or
+            re.match(r'^(hi|hey|hello|yo|sup|wassup|hola|namaste)\b', q_lower)
         )
-        if is_greeting and word_count <= 6 and not detected_genres and not detected_cast:
-            if re.search(r'h+i{2,}', q_lower):
-                greeting_word = "Hiiii! 👋"
-            elif re.search(r'h+e+y{2,}', q_lower):
-                greeting_word = "Heyyyy! 👋"
-            elif re.search(r'h+e+l+o{2,}', q_lower):
-                greeting_word = "Helloooo! 👋"
-            elif re.search(r'y+o{2,}', q_lower):
-                greeting_word = "Yoooo! 🍿"
-            elif "morning" in q_lower:
+
+        # Check if greeting has no movie search intent attached
+        if is_greeting and word_count <= 6 and not any(k in q_lower for k in ["liked", "like", "movie", "watch", "recommend", "interstellar", "inception", "action", "horror", "comedy"]):
+            if "morning" in q_lower:
                 greeting_word = "Good morning! ☀️"
             elif "evening" in q_lower:
                 greeting_word = "Good evening! 🌙"
@@ -364,6 +367,8 @@ class MovieChatbotEngine:
                 greeting_word = "Howdy! 🤠"
             elif re.match(r'^hello\b', q_lower):
                 greeting_word = "Hello! 😊"
+            elif re.match(r'^yo\b', q_lower):
+                greeting_word = "Yo! 🍿"
             else:
                 greeting_word = "Hi! 👋"
 
@@ -388,127 +393,12 @@ class MovieChatbotEngine:
                 "reply": reply,
                 "movies": [],
                 "suggested_prompts": ["🔥 Action Blockbusters", "🌌 Mind-Bending Sci-Fi", "😂 Comedy Hits", "🍿 Surprise Me"],
+                "session_state": state,
                 "mode": "greeting",
                 "tone": tone
             }
 
-        # B. Cinema Quotes & Famous Dialogues
-        if re.search(r'\b(quote|quotes|dialogue|dialogues|famous\s+line|movie\s+quote|saying)\b', q_lower):
-            quote_text, quote_meta = random.choice(MOVIE_QUOTES)
-            reply = (
-                f"🎬 **Iconic Cinema Quote:**\n\n"
-                f"> *\"{quote_text}\"*\n\n"
-                f"— **{quote_meta}**\n\n"
-                f"Would you like another legendary dialogue, or should we find a movie to watch?"
-            )
-            return {
-                "success": True,
-                "reply": reply,
-                "movies": [],
-                "suggested_prompts": ["🎬 Another Quote", "🍿 Surprise Me", "⭐ Top Rated Masterpieces", "😂 Tell a Joke"],
-                "mode": "conversation",
-                "tone": tone
-            }
-
-        # C. Interactive Movie Riddles / Quiz
-        if re.search(r'\b(quiz|riddle|game|trivia\s+game|guess\s+the\s+movie|guess\s+movie)\b', q_lower):
-            riddle_q, riddle_ans = random.choice(MOVIE_RIDDLES)
-            reply = (
-                f"🎮 **Movie Quiz Time!**\n\n"
-                f"{riddle_q}\n\n"
-                f"*(Think you know it? Reply with your guess or tap below to reveal!)*\n\n"
-                f"Answer: **{riddle_ans}**"
-            )
-            return {
-                "success": True,
-                "reply": reply,
-                "movies": [],
-                "suggested_prompts": ["🎮 Another Riddle", "📜 Movie Trivia", "🍿 Surprise Me", "😂 Tell a Joke"],
-                "mode": "conversation",
-                "tone": tone
-            }
-
-        # D. Bot Preferences & Favorite Movie Inquiries
-        if re.search(r'\b(your\s+fav(orite)?\s+movie|what\s+movies?\s+do\s+you\s+like|do\s+you\s+watch\s+movies|your\s+fav(orite)?\s+actor|who\s+is\s+your\s+fav)\b', q_lower):
-            reply = (
-                f"🎬 As an AI cinema companion, I've analyzed over 60,000 films, but I have a special soft spot for **Interstellar** (⭐ 8.4/10) for its mind-bending physics and Hans Zimmer score, and **The Shawshank Redemption** (⭐ 9.3/10) for pure timeless storytelling! 🌌\n\n"
-                f"What is **YOUR** all-time favorite movie? Tell me and I'll find similar masterworks for you!"
-            )
-            return {
-                "success": True,
-                "reply": reply,
-                "movies": [],
-                "suggested_prompts": ["🌌 Movies like Interstellar", "⭐ Top Rated Classics", "🍿 Surprise Me", "🎬 Nolan Films"],
-                "mode": "conversation",
-                "tone": tone
-            }
-
-        # E. Compliments, Affection & Feedback
-        if re.search(r'\b(love\s+you|you\s+are\s+(great|awesome|cool|the\s+best|smart|genius|amazing)|good\s+bot|nice\s+bot|i\s+like\s+you)\b', q_lower):
-            if tone == "informal":
-                reply = f"Ayy, much love **{name}**! ❤️ You're awesome too! Let's celebrate by picking an absolute banger of a movie for you to watch tonight. What genre are we hitting? 🍿🔥"
-            else:
-                reply = f"Thank you so much, **{name}**! 🥰 That makes my recommendation algorithms glow with pride. I'm always here to find you the best films. What shall we watch next?"
-            return {
-                "success": True,
-                "reply": reply,
-                "movies": [],
-                "suggested_prompts": ["🍿 Surprise Me", "🔥 Action Hits", "🌌 Sci-Fi Adventure", "😂 Tell a Joke"],
-                "mode": "conversation",
-                "tone": tone
-            }
-
-        # F. Identity, Capabilities & Help: "Who are you", "Help", "How to use", "What can you do"
-        if re.search(r'\b(who\s+are\s+you|what\s+is\s+your\s+name|what\s+can\s+you\s+do|who\s+made\s+you|who\s+created\s+you|tell\s+me\s+about\s+yourself|help|how\s+to\s+use|features|instructions|guide\s+me)\b', q_lower):
-            reply = (
-                f"🤖 I'm **CineBot**, your intelligent AI movie assistant!\n\n"
-                f"I'm here for you to chat about cinema, share trivia & jokes, and recommend great movies across 60,000+ titles with verified IMDb ratings (0–10 scale) and instant HD trailers.\n\n"
-                f"**Here's what you can ask me:**\n"
-                f"• 🌟 **Actors & Stars**: *'Movies with Tom Hanks'*, *'Leonardo DiCaprio'*, *'Prabhas movies'*\n"
-                f"• 🎬 **Language + Genre Combos**: *'Telugu horror movies'*, *'Hindi action'*, *'Malayalam comedy'*\n"
-                f"• 🚀 **Movie Inquiries & Similar Titles**: *'Interstellar'*, *'Movies like Inception'*, *'What do you think of Titanic?'*\n"
-                f"• 🍿 **Fun & Vibe**: *'I am bored'*, *'Tell me a movie joke'*, *'What snacks should I eat?'*, *'Movie trivia'*, or *'Surprise me'*!"
-            )
-            return {
-                "success": True,
-                "reply": reply,
-                "movies": [],
-                "suggested_prompts": ["🎬 Telugu Horror", "🔥 Movies with Tom Hanks", "🍿 Surprise Me", "😂 Tell a Joke"],
-                "mode": "conversation",
-                "tone": tone
-            }
-
-        # G. Small talk & Are you real / What are you doing
-        if re.search(r'\b(are\s+you\s+(real|human|ai|a\s+robot|a\s+bot))\b', q_lower):
-            reply = (
-                f"🤖 I'm an AI movie companion powered by recommendation algorithms and cinema data! "
-                f"While I may not eat real popcorn, I have encyclopedic knowledge of 60,000+ films, verified IMDb ratings, and trailers ready to share with you! 🍿🎬\n\n"
-                f"What kind of movie are you looking for today?"
-            )
-            return {
-                "success": True,
-                "reply": reply,
-                "movies": [],
-                "suggested_prompts": ["🍿 Surprise Me", "🔥 Action Blockbusters", "🌌 Sci-Fi Adventure", "😂 Tell a Joke"],
-                "mode": "conversation",
-                "tone": tone
-            }
-
-        if re.search(r'\b(what\s+are\s+you\s+doing|what\s+you\s+doing|what\s+are\s+u\s+doing|what.*up\s+to|are\s+you\s+busy)\b', q_lower):
-            reply = (
-                f"🍿 Just analyzing film trends, organizing 60,000+ movie trailers, and waiting to recommend your next favorite movie! "
-                f"What genre or actor are you in the mood for right now?"
-            )
-            return {
-                "success": True,
-                "reply": reply,
-                "movies": [],
-                "suggested_prompts": ["🔥 Action Blockbusters", "🍿 Surprise Me", "🎬 Telugu Cinema", "😂 Tell a Joke"],
-                "mode": "conversation",
-                "tone": tone
-            }
-
-        # H. Well-Being & "How are you?"
+        # How are you?
         if re.search(r'\b(how\s+are\s+you|how\s+are\s+u|how\s+r\s+u|how\s+is\s+it\s+going|hows\s+it\s+going|what.*s\s+up|whats\s+up|how\s+do\s+you\s+do|how\s+you\s+doing)\b', q_lower):
             if tone == "informal":
                 reply = f"I’m doing great, **{name}**! 😎 Ready to help you discover your next favorite movie. What would you like to watch?"
@@ -522,95 +412,44 @@ class MovieChatbotEngine:
                 "reply": reply,
                 "movies": [],
                 "suggested_prompts": ["🔥 Action Blockbusters", "🌌 Mind-Bending Sci-Fi", "🍿 Surprise Me", "😂 Tell a Joke"],
+                "session_state": state,
                 "mode": "conversation",
                 "tone": tone
             }
 
-        # I. Gratitude: "Thank you" / "Thanks"
-        if re.search(r'\b(thank\s+you|thanks|thank\s+u|thx|tysm|thank\s+you\s+so\s+much|appreciate\s+it|great\s+job|awesome\s+bot)\b', q_lower):
+        # Gratitude: "Thank you"
+        if re.search(r'\b(thank\s+you|thanks|thank\s+u|thx|tysm|thank\s+you\s+so\s+much|appreciate\s+it|great\s+job|awesome\s+bot)\b', q_lower) and word_count <= 6:
             if tone == "informal":
                 reply = f"You're super welcome, **{name}**! 🍿 Enjoy your movie! Let me know if you need anything else!"
             elif tone == "formal":
                 reply = f"It is truly my pleasure, **{name}**. Enjoy your screening, and I remain at your service."
             else:
-                reply = f"You’re welcome! 🍿 Enjoy your movie!"
+                reply = "You’re welcome! 🍿 Enjoy your movie!"
 
             return {
                 "success": True,
                 "reply": reply,
                 "movies": [],
-                "suggested_prompts": ["🍿 Another Movie", "🎬 Top Telugu Hits", "🎭 Top Thrillers", "😂 Tell a Joke"],
+                "suggested_prompts": ["➕ Show More Movies", "🍿 Surprise Me", "😂 Tell a Joke"],
+                "session_state": state,
                 "mode": "conversation",
                 "tone": tone
             }
 
-        # J. Boredom & Mood: "I'm bored"
+        # Boredom: "I'm bored"
         if re.search(r'\b(i\s+am\s+bored|im\s+bored|boring|bored|nothing\s+to\s+do)\b', q_lower) and not re.search(r'\b(movie|watch|recommend|film)\b', q_lower):
-            reply = f"Let’s fix that! 😄 Are you looking for something funny, thrilling, romantic, mysterious, or completely unexpected?"
+            reply = "Let’s fix that! 😄 Are you looking for something funny, thrilling, romantic, mysterious, or completely unexpected?"
             return {
                 "success": True,
                 "reply": reply,
                 "movies": [],
                 "suggested_prompts": ["😂 Something Funny", "🔥 Thrilling Action", "❤️ Romantic", "🕵️ Mysterious", "🍿 Completely Unexpected"],
+                "session_state": state,
                 "mode": "conversation",
                 "tone": tone
             }
 
-        # K. Emotional check-ins / Bad day / Celebrating
-        if re.search(r'\b(had\s+a\s+(bad|long|tiring|stressful)\s+day|cheer\s+me\s+up|feeling\s+(down|sad|exhausted|lonely|heartbroken))\b', q_lower):
-            reply = f"I’m sorry to hear that! 🛋️ Let’s unwind with some comforting, feel-good cinema. Would you like a warm comedy, an inspiring drama, or an easy-going adventure?"
-            return {
-                "success": True,
-                "reply": reply,
-                "movies": [],
-                "suggested_prompts": ["😂 Feel-Good Comedy", "🌟 Inspiring Drama", "🍿 Surprise Me", "🎬 Telugu Comedy"],
-                "mode": "conversation",
-                "tone": tone
-            }
-
-        # L. Movie Snacks & Concessions
-        if re.search(r'\b(what.*eat|snacks?|popcorn|pizza|food|nachos|concession|drink|drinks)\b', q_lower):
-            if tone == "informal":
-                reply = (
-                    "🍿 **The Ultimate Movie Snack Tier List, my friend:**\n\n"
-                    "1. 🧈 **Fresh Buttered Popcorn** (extra salt & caramel mix = elite combination!)\n"
-                    "2. 🧀 **Loaded Nachos with Jalapeños** (perfect for action thrillers)\n"
-                    "3. 🍕 **Warm Cheesy Pizza Slice** (ideal for late-night movie binges)\n"
-                    "4. 🍫 **Chilled M&Ms or Gummy Bears** (tossed right into your warm popcorn!)\n\n"
-                    "Get your snack ready and let's pick the movie! What's the genre for tonight?"
-                )
-            else:
-                reply = (
-                    "🍿 **Recommended Snacks & Concessions for Your Screening:**\n\n"
-                    "For optimal viewing enjoyment, classic cinema pairings include freshly popped gourmet popcorn with sea salt, warm nachos with aged cheddar dip, artisan pizzas, or dark chocolate confections.\n\n"
-                    "Shall we select a distinguished film to accompany your refreshments?"
-                )
-            return {
-                "success": True,
-                "reply": reply,
-                "movies": [],
-                "suggested_prompts": ["🍿 Surprise Me", "🎬 Feel-Good Comedy", "🔥 High-Octane Action", "🌌 Sci-Fi Adventure"],
-                "mode": "conversation",
-                "tone": tone
-            }
-
-        # M. Movie Trivia
-        if re.search(r'\b(trivia|trivia\s+fact|movie\s+fact|facts|did\s+you\s+know|tell\s+me\s+something\s+cool)\b', q_lower):
-            fact = random.choice(MOVIE_TRIVIA)
-            if tone == "informal":
-                reply = f"🤯 **Check this out, bro:**\n\n{fact}\n\nWant another mind-blowing fact, or should we jump into watching something legendary?"
-            else:
-                reply = f"📜 **Cinema History & Behind-the-Scenes Trivia:**\n\n{fact}\n\nWould you care for another historical cinema note, or shall we explore top-rated titles from this collection?"
-            return {
-                "success": True,
-                "reply": reply,
-                "movies": [],
-                "suggested_prompts": ["📜 Another Trivia Fact", "🍿 Surprise Me", "⭐ Top Rated Masterpieces", "😂 Tell a Joke"],
-                "mode": "conversation",
-                "tone": tone
-            }
-
-        # N. Movie Jokes
+        # Movie Jokes
         if re.search(r'\b(joke|jokes|make\s+me\s+laugh|tell.*joke|movie\s+joke|humor)\b', q_lower):
             setup, punchline = random.choice(MOVIE_JOKES)
             reply = f"😂 Here's a cinema joke for you:\n\n**{setup}**\n*{punchline}*\n\nWould you like another joke, or should we find a laugh-out-loud comedy movie to stream?"
@@ -618,521 +457,628 @@ class MovieChatbotEngine:
                 "success": True,
                 "reply": reply,
                 "movies": [],
-                "suggested_prompts": ["😂 Another Joke", "😂 Malayalam Comedy", "🍿 Surprise Me", "🎬 Best Comedies"],
+                "suggested_prompts": ["😂 Another Joke", "😂 Comedy Hits", "🍿 Surprise Me"],
+                "session_state": state,
                 "mode": "conversation",
                 "tone": tone
             }
 
-        # O. Farewells
-        if re.search(r'\b(bye|goodbye|good\s+night|gn|see\s+you|catch\s+you\s+later|cya)\b', q_lower):
-            reply = f"🌙 Goodbye **{name}**! Enjoy your movie, and have a wonderful time! 🍿✨"
+        # Movie Trivia
+        if re.search(r'\b(trivia|trivia\s+fact|movie\s+fact|facts|did\s+you\s+know|tell\s+me\s+something\s+cool)\b', q_lower):
+            fact = random.choice(MOVIE_TRIVIA)
+            reply = f"🤯 **Cinema Trivia:**\n\n{fact}\n\nWant another cool fact, or should we find a movie to watch?"
+            return {
+                "success": True,
+                "reply": reply,
+                "movies": [],
+                "suggested_prompts": ["📜 Another Trivia Fact", "🍿 Surprise Me", "⭐ Top Rated"],
+                "session_state": state,
+                "mode": "conversation",
+                "tone": tone
+            }
+
+        # Quotes
+        if re.search(r'\b(quote|quotes|dialogue|dialogues|famous\s+line|movie\s+quote)\b', q_lower):
+            q_text, q_meta = random.choice(MOVIE_QUOTES)
+            reply = f"🎬 **Iconic Cinema Quote:**\n\n> *\"{q_text}\"*\n\n— **{q_meta}**"
+            return {
+                "success": True,
+                "reply": reply,
+                "movies": [],
+                "suggested_prompts": ["🎬 Another Quote", "🍿 Surprise Me", "⭐ Top Rated"],
+                "session_state": state,
+                "mode": "conversation",
+                "tone": tone
+            }
+
+        # Who are you / Identity
+        if re.search(r'\b(who\s+are\s+you|what\s+is\s+your\s+name|what\s+can\s+you\s+do|who\s+made\s+you|help|guide\s+me)\b', q_lower):
+            reply = (
+                f"🤖 I'm **CineBot**, your intelligent conversational movie assistant!\n\n"
+                f"I remember our conversation context and recommend real movies from our verified 60,000+ dataset with IMDb ratings and instant trailers.\n\n"
+                f"**Things you can say:**\n"
+                f"• *\"I liked Interstellar\"* → Get tailored recommendations\n"
+                f"• *\"Give me more\"* → Fetch the next set of unseen movies\n"
+                f"• *\"Make them more emotional\"* or *\"Make them funnier\"* → Pivot the mood\n"
+                f"• *\"Tell me about the first one\"* → Learn full details about any movie in the list"
+            )
+            return {
+                "success": True,
+                "reply": reply,
+                "movies": [],
+                "suggested_prompts": ["🌌 I liked Interstellar", "🔥 Action Movies", "🍿 Surprise Me", "😂 Tell a Joke"],
+                "session_state": state,
+                "mode": "conversation",
+                "tone": tone
+            }
+
+        # Snacks & Concessions
+        if re.search(r'\b(what.*(eat|snack)|snacks?|popcorn|pizza|food|nachos)\b', q_lower) and word_count <= 15:
+            reply = (
+                "🍿 **Movie Snack Tier List:**\n\n"
+                "1. 🧈 **Fresh Buttered Popcorn** with extra salt & caramel\n"
+                "2. 🧀 **Loaded Nachos with Warm Cheese**\n"
+                "3. 🍕 **Fresh Pizza Slice**\n"
+                "4. 🍫 **Chilled M&Ms**\n\n"
+                "Grab your snack and let me know what we're watching!"
+            )
+            return {
+                "success": True,
+                "reply": reply,
+                "movies": [],
+                "suggested_prompts": ["🍿 Surprise Me", "🔥 Action Blockbusters", "🌌 Sci-Fi Adventure"],
+                "session_state": state,
+                "mode": "conversation",
+                "tone": tone
+            }
+
+        # Farewells
+        if re.search(r'\b(bye|goodbye|good\s+night|gn|see\s+you|catch\s+you\s+later|cya)\b', q_lower) and word_count <= 5:
+            reply = f"🌙 Goodbye **{name}**! Enjoy your movie and have a wonderful time! 🍿✨"
             return {
                 "success": True,
                 "reply": reply,
                 "movies": [],
                 "suggested_prompts": ["🍿 Quick Surprise", "⭐ Top Rated"],
+                "session_state": state,
                 "mode": "conversation",
                 "tone": tone
             }
 
-        # ── 3. CONTEXT-AWARE FOLLOW-UP RESOLUTION (FROM PREVIOUS TURNS) ───────
-        pending_movie = history_ctx.get("pending_followup_movie")
-        pending_boredom = history_ctx.get("pending_boredom")
-
-        # A. Resolving a movie follow-up answer (e.g. User previously asked about "Interstellar" and now answers)
-        if pending_movie:
-            p_movie_lower = pending_movie.lower()
-            ref_movie = self.rec.find_by_title(pending_movie, limit=1)
-            ref_id = ref_movie[0]["id"] if ref_movie else None
-
-            # 1. Space exploration / Science aspect
-            if re.search(r'\b(space|space\s+exploration|science|hard\s+science|physics|astrophysics|cosmic|cosmos|black\s+hole)\b', q_lower):
-                space_candidates = ["Contact", "Arrival", "2001: A Space Odyssey", "The Martian", "Gravity", "Solaris", "Ad Astra", "First Man"]
-                recs = []
-                for sc in space_candidates:
-                    sc_res = self.rec.find_by_title(sc, limit=1)
-                    if sc_res and sc_res[0].get("id") != ref_id:
-                        recs.append(sc_res[0])
-                if not recs and ref_id:
-                    recs = [m for m in self.rec.get_content_recommendations(ref_id, 6) if m.get("id") != ref_id]
-
+        # ── 3. MOVIE OPINIONS & CRITIQUES ("What do you think of Interstellar?") ──
+        if re.search(r'\b(what\s+do\s+you\s+think\s+of|opinion\s+on|thoughts\s+on|review\s+of|why\s+is.*famous)\b', q_lower) or ("interstellar" in q_lower and ("think" in q_lower or "opinion" in q_lower)):
+            if "interstellar" in q_lower:
                 reply = (
-                    f"🌌 **Awesome! Since you loved the space exploration & scientific realism of {pending_movie}:**\n\n"
-                    f"Here are top-tier space and science fiction masterworks with verified **IMDb 0–10 ratings** and instant HD trailers:"
+                    "🚀 **Interstellar? Absolute masterpiece, hands down!**\n\n"
+                    "Between Hans Zimmer's pipe organ score and the physics of the black hole Gargantua, Christopher Nolan created one of the greatest sci-fi emotional journeys ever. "
+                    "The scene where Cooper watches 23 years of video messages gives instant chills every single time. ⭐ Verified **8.4/10** on IMDb.\n\n"
+                    "Here are some top works with similar depth and scale:"
                 )
-                return {
-                    "success": True,
-                    "reply": reply,
-                    "movies": recs[:6],
-                    "suggested_prompts": [f"🎬 More like {pending_movie}", "🔥 Nolan Masterpieces", "🍿 Surprise Me"],
-                    "mode": "followup_resolution",
-                    "tone": tone
-                }
-
-            # 2. Emotional Story / Human Connection aspect
-            if re.search(r'\b(emotional|emotion|emotional\s+story|story|drama|feelings|father|daughter|love|tears)\b', q_lower):
-                emotional_candidates = ["Arrival", "Contact", "First Man", "The Tree of Life", "Eternal Sunshine of the Spotless Mind", "Ad Astra"]
-                recs = []
-                for ec in emotional_candidates:
-                    ec_res = self.rec.find_by_title(ec, limit=1)
-                    if ec_res and ec_res[0].get("id") != ref_id:
-                        recs.append(ec_res[0])
-                if not recs and ref_id:
-                    recs = [m for m in self.rec.get_content_recommendations(ref_id, 6) if m.get("id") != ref_id]
-
-                reply = (
-                    f"❤️ **That emotional core hits deep! Based on the heartfelt human narrative of {pending_movie}:**\n\n"
-                    f"Here are deeply moving cinematic stories that weave high-concept ideas with poignant emotion (⭐ IMDb 0–10 scale):"
-                )
-                return {
-                    "success": True,
-                    "reply": reply,
-                    "movies": recs[:6],
-                    "suggested_prompts": ["🎭 Deep Emotional Dramas", "🌌 Sci-Fi Dramas", "🍿 Surprise Me"],
-                    "mode": "followup_resolution",
-                    "tone": tone
-                }
-
-            # 3. Mind-Bending / Time Concepts / Psychological aspect
-            if re.search(r'\b(mind.*bending|concept|concepts|time|time\s+travel|dimensions|relativity|twist|dream|heist|psychological)\b', q_lower):
-                mind_candidates = ["Inception", "Tenet", "Primer", "Predestination", "Coherence", "The Matrix", "Shutter Island", "Memento"]
-                recs = []
-                for mc in mind_candidates:
-                    mc_res = self.rec.find_by_title(mc, limit=1)
-                    if mc_res and mc_res[0].get("id") != ref_id:
-                        recs.append(mc_res[0])
-                if not recs and ref_id:
-                    recs = [m for m in self.rec.get_content_recommendations(ref_id, 6) if m.get("id") != ref_id]
-
-                reply = (
-                    f"🌀 **Mind-bending concepts are the best! If you loved the complex ideas in {pending_movie}:**\n\n"
-                    f"Here are brilliant, brain-twisting films that will keep you guessing until the final second (⭐ IMDb 0–10 scale):"
-                )
-                return {
-                    "success": True,
-                    "reply": reply,
-                    "movies": recs[:6],
-                    "suggested_prompts": ["🌀 Mind-Bending Thrillers", "🎬 Christopher Nolan Films", "🍿 Surprise Me"],
-                    "mode": "followup_resolution",
-                    "tone": tone
-                }
-
-            # 4. General "Recommend similar" / "Yes" / "Movies like it"
-            if re.search(r'\b(recommend|similar|movies\s+like|yes|sure|show\s+me|all\s+of\s+them|everything|plot)\b', q_lower) and ref_id:
-                recs = [m for m in self.rec.get_content_recommendations(ref_id, 6) if m.get("id") != ref_id]
-                reply = (
-                    f"🎬 **Here are the top acclaimed movies sharing themes and story elements with {pending_movie}:**\n\n"
-                    f"⭐ Each title features its verified **IMDb 0–10 rating** and instant HD trailer stream:"
-                )
+                recs = [m for m in self.rec.get_content_recommendations(157336, 5) if m.get("id") != 157336]
+                state["current_movie_id"] = 157336
+                state["current_movie_title"] = "Interstellar"
+                state["latest_recommended_movies"] = recs
+                for m in recs:
+                    state["shown_movie_ids"].append(m["id"])
                 return {
                     "success": True,
                     "reply": reply,
                     "movies": recs,
-                    "suggested_prompts": ["🌌 More Sci-Fi Hits", "🔥 What's Trending?", "🍿 Surprise Me"],
-                    "mode": "followup_resolution",
-                    "tone": tone
-                }
-
-        # B. Resolving boredom category answer
-        if pending_boredom:
-            if re.search(r'\b(funny|comedy|laugh|humor)\b', q_lower):
-                return {
-                    "success": True,
-                    "reply": "😄 **Here are top-rated laugh-out-loud comedies to cheer you up (⭐ IMDb 0–10 scale):**",
-                    "movies": self.rec.get_by_genre("Comedy", 6),
-                    "suggested_prompts": ["😂 Malayalam Comedy", "🍿 Surprise Me", "🔥 Action Blockbusters"],
-                    "mode": "followup_resolution",
-                    "tone": tone
-                }
-            if re.search(r'\b(thrilling|thriller|action|suspense|exciting)\b', q_lower):
-                return {
-                    "success": True,
-                    "reply": "🔥 **Here are high-octane, adrenaline-pumping thrillers to keep you on the edge of your seat (⭐ IMDb 0–10 scale):**",
-                    "movies": self.rec.get_by_genre("Thriller", 6),
-                    "suggested_prompts": ["🔥 Hindi Action", "🎬 Telugu Thrillers", "🍿 Surprise Me"],
-                    "mode": "followup_resolution",
-                    "tone": tone
-                }
-            if re.search(r'\b(romantic|romance|love)\b', q_lower):
-                return {
-                    "success": True,
-                    "reply": "❤️ **Here are heartwarming, beautifully written romantic films (⭐ IMDb 0–10 scale):**",
-                    "movies": self.rec.get_by_genre("Romance", 6),
-                    "suggested_prompts": ["❤️ Classic Romances", "🍿 Surprise Me", "😂 Feel-Good Comedy"],
-                    "mode": "followup_resolution",
-                    "tone": tone
-                }
-            if re.search(r'\b(mysterious|mystery|detective|twists)\b', q_lower):
-                return {
-                    "success": True,
-                    "reply": "🕵️ **Here are gripping mystery masterworks with shocking plot twists (⭐ IMDb 0–10 scale):**",
-                    "movies": self.rec.get_by_genre("Mystery", 6),
-                    "suggested_prompts": ["🧠 Psychological Thrillers", "🍿 Surprise Me", "⭐ Top Rated"],
-                    "mode": "followup_resolution",
-                    "tone": tone
-                }
-            if re.search(r'\b(unexpected|surprise|random)\b', q_lower):
-                surprise_m = self.rec.get_surprise_movie() or self.rec._get_top_rated(1)[0]
-                return {
-                    "success": True,
-                    "reply": f"🎉 **Boom! Here is an unexpected cinematic gem:**\n\n🎬 **{surprise_m['title']}** ({surprise_m['year']}) · ⭐ **{surprise_m['rating']}/10**\n\n*{surprise_m.get('overview', '')[:200]}...*",
-                    "movies": [surprise_m],
-                    "suggested_prompts": ["🍿 Another Surprise", f"🔍 Similar to {surprise_m['title']}", "▶ Watch Trailer"],
-                    "mode": "followup_resolution",
-                    "tone": tone
-                }
-
-        # ── 4. OPPOSITE-PERSON MOVIE CRITIQUES & DEBATES ──────────────────────
-        if re.search(r'\b(what\s+do\s+you\s+think\s+of|opinion\s+on|thoughts\s+on|why\s+is.*famous|why\s+is.*popular)\b', q_lower) or ("interstellar" in q_lower and ("think" in q_lower or "opinion" in q_lower or "review" in q_lower)):
-            if "interstellar" in q_lower:
-                if tone == "informal":
-                    reply = (
-                        "🚀 **Interstellar? Absolute masterpiece, hands down!**\n\n"
-                        "Between Hans Zimmer's pipe organ score that shakes your soul and the mind-bending physics of the black hole Gargantua, Christopher Nolan created one of the greatest sci-fi emotional journeys ever. "
-                        "The scene where Cooper watches 23 years of video messages? Instant chills every single time. ⭐ Verified **8.4/10** on IMDb.\n\n"
-                        "Have you seen it recently, or should we look at other deep space mind-benders like *Contact* or *Arrival*?"
-                    )
-                else:
-                    reply = (
-                        "🌌 **Critical Appraisal of *Interstellar* (2014):**\n\n"
-                        "Directed by Christopher Nolan with theoretical guidance from Nobel laureate Kip Thorne, *Interstellar* represents a pinnacle of contemporary hard science fiction. "
-                        "It marries relativistic astrophysics with an intimate treatise on human connection and parental devotion. The film holds a stellar **8.4/10** IMDb rating.\n\n"
-                        "Would you like to examine similar thematic works in contemplative science fiction?"
-                    )
-                return {
-                    "success": True,
-                    "reply": reply,
-                    "movies": [m for m in self.rec.get_content_recommendations(157336, 4) if m.get("id") != 157336],
-                    "suggested_prompts": ["🌌 Movies like Interstellar", "🎬 Nolan Masterpieces", "🍿 Surprise Me"],
+                    "suggested_prompts": ["➕ Show More Movies", "🎭 Make them more emotional", "🔍 Tell me about the first one"],
+                    "session_state": state,
                     "mode": "opinion",
                     "tone": tone
                 }
 
-            if "inception" in q_lower:
-                if tone == "informal":
-                    reply = (
-                        "🌀 **Inception is sheer genius!**\n\n"
-                        "The dream-within-a-dream layered structure, the rotating hallway fight scene with Joseph Gordon-Levitt, and that ending spinning top that left the whole world arguing for a decade! ⭐ Solid **8.4/10** on IMDb.\n\n"
-                        "What's your take — do you think the top fell at the end, or was Cobb still dreaming?"
-                    )
-                else:
-                    reply = (
-                        "🌀 **Critical Analysis of *Inception* (2010):**\n\n"
-                        "A masterclass in structural narrative architecture, *Inception* weaves psychological depth with breathtaking practical effects. Holding a verified **8.4/10** on IMDb, it remains a defining modern cinematic classic.\n\n"
-                        "Shall I curate psychological thrillers with comparable multi-layered plot mechanics?"
-                    )
-                return {
-                    "success": True,
-                    "reply": reply,
-                    "movies": self.rec.get_by_cast("Leonardo DiCaprio", 4),
-                    "suggested_prompts": ["🎬 Movies like Inception", "🌟 Leonardo DiCaprio Hits", "🍿 Surprise Me"],
-                    "mode": "opinion",
-                    "tone": tone
-                }
+        # ── 4. ORDINAL MOVIE DETAILS INQUIRY ("Tell me about the first one") ──
+        ord_idx = self._detect_ordinal_index(q_lower)
+        is_detail_query = bool(
+            ord_idx is not None or
+            re.search(r'\b(tell\s+me\s+about|what\s+is\s+(the\s+)?(plot|story|synopsis|overview|details?|rating)\s+of|explain\s+the|info\s+on)\b', q_lower)
+        )
 
-        # ── 5. DIRECT COMPLETE REQUESTS ───────────────────────────────────────
-        # A. Cast-based Requests: "Movies with Tom Hanks", "Leonardo DiCaprio movies", "films starring Christian Bale"
+        if is_detail_query and state["latest_recommended_movies"] and ord_idx is not None:
+            latest = state["latest_recommended_movies"]
+            if ord_idx == -1:
+                target_m = latest[-1]
+            elif 0 <= ord_idx < len(latest):
+                target_m = latest[ord_idx]
+            else:
+                target_m = latest[0]
+
+            # Fetch fresh metadata from recommender engine
+            full_movie = self.rec.get_movie_by_id(target_m["id"]) or target_m
+            genres_fmt = str(full_movie.get("genres", "")).replace("|", ", ")
+            overview = full_movie.get("overview") or "No overview available for this title."
+            lang_str = full_movie.get("language", "English")
+
+            reply = (
+                f"🎬 **{full_movie['title']}** ({full_movie.get('year', '')})\n\n"
+                f"⭐ **IMDb Rating:** {full_movie.get('rating', '7.0')}/10 · 🌐 **Language:** {lang_str}\n"
+                f"🎭 **Genres:** {genres_fmt}\n\n"
+                f"📖 **Synopsis:**\n{overview}"
+            )
+
+            state["last_intent"] = "movie_detail"
+            return {
+                "success": True,
+                "reply": reply,
+                "movies": [full_movie],
+                "suggested_prompts": [
+                    f"🎬 More like {full_movie['title']}",
+                    "➕ Show More Movies",
+                    "🎭 Make them more emotional",
+                    "🍿 Surprise Me"
+                ],
+                "session_state": state,
+                "mode": "movie_details",
+                "tone": tone
+            }
+
+        # ── 5. "MORE LIKE THIS" / "MORE LIKE THE FIRST ONE" ──────────────────
+        if re.search(r'\b(more\s+like\s+this|more\s+like\s+the\s+first|more\s+like\s+the\s+second|similar\s+to\s+this)\b', q_lower):
+            ref_movie_id = state.get("current_movie_id")
+            if ord_idx is not None and state["latest_recommended_movies"]:
+                if 0 <= ord_idx < len(state["latest_recommended_movies"]):
+                    ref_movie_id = state["latest_recommended_movies"][ord_idx]["id"]
+
+            if not ref_movie_id and state["latest_recommended_movies"]:
+                ref_movie_id = state["latest_recommended_movies"][0]["id"]
+
+            if ref_movie_id:
+                ref_m = self.rec.get_movie_by_id(ref_movie_id)
+                if ref_m:
+                    state["current_movie_id"] = ref_m["id"]
+                    state["current_movie_title"] = ref_m["title"]
+                    state["current_genres"] = [g.strip() for g in str(ref_m.get("genres", "")).split("|") if g.strip()]
+
+                    # Exclude already shown movies
+                    shown_set = set(state["shown_movie_ids"])
+                    shown_set.add(ref_m["id"])
+
+                    raw_recs = self.rec.get_content_recommendations(ref_m["id"], n=25, language=state.get("current_language"))
+                    unseen_recs = [m for m in raw_recs if m["id"] not in shown_set][:5]
+
+                    if len(unseen_recs) < 5 and state["current_genres"]:
+                        genre_fill = self.rec.get_by_genre(state["current_genres"][0], n=20, exclude_ids=list(shown_set))
+                        for gm in genre_fill:
+                            if gm["id"] not in shown_set and gm["id"] not in [x["id"] for x in unseen_recs]:
+                                unseen_recs.append(gm)
+                                if len(unseen_recs) >= 5:
+                                    break
+
+                    for m in unseen_recs:
+                        state["shown_movie_ids"].append(m["id"])
+                    state["latest_recommended_movies"] = unseen_recs
+                    state["last_intent"] = "recommend_similar"
+
+                    reply = f"Here are more movies with a similar vibe and story to **{ref_m['title']}**:"
+                    return {
+                        "success": True,
+                        "reply": reply,
+                        "movies": unseen_recs,
+                        "suggested_prompts": ["➕ Show More Movies", "🎭 Make them more emotional", "🔍 Tell me about the first one", "🍿 Surprise Me"],
+                        "session_state": state,
+                        "mode": "similar_recommendations",
+                        "tone": tone
+                    }
+
+        # ── 6. PAGINATION / "GIVE ME MORE" / "SHOW MORE MOVIES" ───────────────
+        is_give_more = bool(
+            re.search(r'\b(give\s+me\s+more|show\s+more(\s+movies)?|more\s+movies|more\s+picks|more\s+options|give\s+more|fetch\s+more|more\s+like\s+these|next(\s+set|\s+movies|\s+page)?)\b', q_lower) or
+            q_clean in ["more", "give me more", "show more", "next", "more movies", "show more movies"]
+        )
+
+        if is_give_more:
+            shown_set = set(state.get("shown_movie_ids", []))
+            unseen = []
+
+            # Strategy 1: Active movie content recommendations
+            if state.get("current_movie_id"):
+                mid = state["current_movie_id"]
+                raw_pool = self.rec.get_content_recommendations(mid, n=40, language=state.get("current_language"))
+                # If mood active, prioritize mood genres
+                if state.get("current_mood") and state["current_mood"] in MOOD_MAP:
+                    target_genres = [g.lower() for g in MOOD_MAP[state["current_mood"]]["genres"]]
+                    mood_matches = [m for m in raw_pool if m["id"] not in shown_set and any(g.lower() in m.get("genres", "").lower() for g in target_genres)]
+                    other_matches = [m for m in raw_pool if m["id"] not in shown_set and m not in mood_matches]
+                    candidate_pool = mood_matches + other_matches
+                else:
+                    candidate_pool = [m for m in raw_pool if m["id"] not in shown_set]
+
+                unseen.extend(candidate_pool[:5])
+
+            # Strategy 2: Genre or Language pool
+            if len(unseen) < 5 and state.get("current_genres"):
+                for g in state["current_genres"][:2]:
+                    genre_recs = self.rec.get_by_genre(g, n=25, language=state.get("current_language"), exclude_ids=list(shown_set))
+                    for m in genre_recs:
+                        if m["id"] not in shown_set and m["id"] not in [x["id"] for x in unseen]:
+                            unseen.append(m)
+                            if len(unseen) >= 5:
+                                break
+                    if len(unseen) >= 5:
+                        break
+
+            # Strategy 3: Cast pool
+            if len(unseen) < 5 and state.get("current_cast"):
+                cast_recs = self.rec.get_by_cast(state["current_cast"], n=25, language=state.get("current_language"))
+                for m in cast_recs:
+                    if m["id"] not in shown_set and m["id"] not in [x["id"] for x in unseen]:
+                        unseen.append(m)
+                        if len(unseen) >= 5:
+                            break
+
+            # Strategy 4: Trending fallback
+            if len(unseen) < 5:
+                trending_pool = self.rec.get_trending(40, language=state.get("current_language"))
+                for m in trending_pool:
+                    if m["id"] not in shown_set and m["id"] not in [x["id"] for x in unseen]:
+                        unseen.append(m)
+                        if len(unseen) >= 5:
+                            break
+
+            # Record newly shown IDs
+            for m in unseen:
+                state["shown_movie_ids"].append(m["id"])
+            state["latest_recommended_movies"] = unseen
+            state["last_intent"] = "give_more"
+
+            if tone == "informal":
+                reply = "Boom! Here are 5 more fresh picks from the catalog! 🍿🔥"
+            elif tone == "formal":
+                reply = "Certainly. Here is an additional curation of distinguished selections:"
+            else:
+                reply = "Absolutely! Here are some more movies you might enjoy:"
+
+            return {
+                "success": True,
+                "reply": reply,
+                "movies": unseen,
+                "suggested_prompts": ["➕ Show More Movies", "🎭 Make them more emotional", "🔥 Make them more intense", "🔍 Tell me about the first one"],
+                "session_state": state,
+                "mode": "pagination",
+                "tone": tone
+            }
+
+        # ── 7. ENTITY EXTRACTION & COMBINED FILTERS (LANGUAGE / GENRE / CAST) ──
+        entities = self.rec.normalize_and_extract_entities(raw_msg)
+        detected_lang = entities.get("detected_language")
+        detected_genres = entities.get("detected_genres", [])
+        detected_cast = entities.get("detected_cast")
+
+        # A. Cast-based Requests (e.g. "Movies with Tom Hanks", "Prabhas movies")
         if detected_cast:
+            state["current_cast"] = detected_cast
+            if detected_lang:
+                state["current_language"] = detected_lang
+            if detected_genres:
+                state["current_genres"] = detected_genres
+
+            shown_set = set(state.get("shown_movie_ids", []))
             genre_name = detected_genres[0] if detected_genres else None
             cast_movies = self.rec.get_by_cast(
                 detected_cast,
-                n=6,
+                n=15,
                 genre=genre_name,
                 language=detected_lang
             )
-            if cast_movies:
-                filter_desc = ""
-                if detected_lang and genre_name:
-                    filter_desc = f" in **{detected_lang} ({genre_name})**"
-                elif genre_name:
-                    filter_desc = f" in **{genre_name}**"
-                elif detected_lang:
-                    filter_desc = f" in **{detected_lang}**"
+            unseen = [m for m in cast_movies if m["id"] not in shown_set][:5]
+            if not unseen:
+                unseen = cast_movies[:5]
 
-                typo_str = ""
-                if typo_corrections:
-                    corr_notes = [f"'{k}' → '{v}'" for k, v in typo_corrections.items() if k != v.lower()]
-                    if corr_notes:
-                        typo_str = f" *(Fuzzy matching applied: {', '.join(corr_notes[:2])})*"
-
-                if tone == "informal":
-                    reply = (
-                        f"🌟 **{detected_cast} is an absolute icon!** Here are their top acclaimed films{filter_desc}{typo_str}:\n\n"
-                        f"⭐ Every single movie has verified **IMDb 0–10 ratings** and instant HD trailers ready to play!"
-                    )
-                elif tone == "formal":
-                    reply = (
-                        f"🌟 **Distinguished Filmography of {detected_cast}:**\n\n"
-                        f"Presented below is an esteemed curation of works starring **{detected_cast}**{filter_desc} from our verified 60,000+ database{typo_str}, evaluated on the standardized IMDb 0–10 scale:"
-                    )
-                else:
-                    reply = (
-                        f"🌟 Here are the top acclaimed movies starring **{detected_cast}**{filter_desc} from our 60,000+ dataset{typo_str}:\n\n"
-                        f"⭐ Each title features its verified **IMDb 0–10 rating** and instant HD trailer stream."
-                    )
-
-                return {
-                    "success": True,
-                    "reply": reply,
-                    "movies": cast_movies,
-                    "suggested_prompts": [
-                        f"🍿 More {detected_cast}",
-                        f"🎬 {detected_cast} Action Hits",
-                        "🔥 What's Trending?",
-                        "🍿 Surprise Me"
-                    ],
-                    "mode": "cast_filter",
-                    "tone": tone
-                }
-
-        # B. Combined Language + Genre Filter: "Telugu horror movies", "Hindi action movies", "Malayalam comedy"
-        if detected_lang and detected_genres:
-            genre_name = detected_genres[0]
-            combined_recs = self.rec.get_by_genre_and_language(genre_name, detected_lang, limit=6)
-            if combined_recs:
-                genres_title = " & ".join(detected_genres)
-                typo_str = ""
-                if typo_corrections:
-                    corr_notes = [f"'{k}' → '{v}'" for k, v in typo_corrections.items() if k != v.lower()]
-                    if corr_notes:
-                        typo_str = f" *(Fuzzy matching: {', '.join(corr_notes[:2])})*"
-
-                if tone == "informal":
-                    reply = (
-                        f"🎬 **Got you covered, {name}!** Here are the top acclaimed **{detected_lang} {genres_title}** movies matching **both language and genre**{typo_str}:\n\n"
-                        f"⭐ Verified **IMDb 0–10 ratings** and in-page HD trailer streams attached!"
-                    )
-                elif tone == "formal":
-                    reply = (
-                        f"🎬 **Bespoke Curation for {detected_lang} {genres_title} Cinema:**\n\n"
-                        f"The following selections strictly satisfy both **{detected_lang} language** and **{genres_title} genre** criteria{typo_str}, ranked by verified IMDb metrics:"
-                    )
-                else:
-                    reply = (
-                        f"🎬 Here are the top acclaimed **{detected_lang} {genres_title}** movies from our database matching **both {detected_lang} language and {genres_title} genre**{typo_str}:\n\n"
-                        f"⭐ Each title features its verified **IMDb 0–10 rating** and in-page HD trailer stream."
-                    )
-
-                return {
-                    "success": True,
-                    "reply": reply,
-                    "movies": combined_recs,
-                    "suggested_prompts": [
-                        f"🔥 More {detected_lang} Picks",
-                        f"🎭 More {genres_title} Movies",
-                        "🍿 Surprise Me",
-                        "🎬 Telugu Horror"
-                    ],
-                    "mode": "combined_filter",
-                    "tone": tone
-                }
-
-        # C. Explicit Similar Request for a Movie: "Movies like Interstellar", "Recommend movies similar to Inception"
-        is_explicit_rec_request = bool(
-            re.search(r'\b(movies\s+like|similar\s+to|recommend\s+movies\s+like|films\s+like|like\s+[a-z0-9\s]+|recommend.*similar)\b', q_lower)
-        )
-        if is_explicit_rec_request:
-            prompt_res = self.rec.recommend_by_prompt(raw_msg, limit=8)
-            matched = prompt_res.get("matched_movies", [])
-            recs = prompt_res.get("recommendations", [])
-
-            if matched:
-                ref = matched[0]
-                # Filter out the exact movie from the recommendations list
-                rec_cards = [m for m in recs if m.get("id") != ref.get("id")]
-                if not rec_cards:
-                    rec_cards = [m for m in self.rec.get_content_recommendations(ref["id"], 6) if m.get("id") != ref.get("id")]
-
-                if tone == "informal":
-                    reply = f"🚀 **Here are the top movies matching the vibe and plot themes of {ref['title']} ({ref['year']}) [⭐ {ref['rating']}/10]:**"
-                else:
-                    reply = f"🚀 **Acclaimed Curations Thematically Similar to {ref['title']} ({ref['year']}) [⭐ {ref['rating']}/10]:**"
-
-                return {
-                    "success": True,
-                    "reply": reply,
-                    "movies": rec_cards[:6],
-                    "suggested_prompts": [
-                        f"🎬 Trailer for {ref['title']}",
-                        "🌌 More in this Genre",
-                        "🍿 Surprise Me"
-                    ],
-                    "mode": "similar_recommendations",
-                    "tone": tone
-                }
-
-        # D. Single Genre Requests: "Psychological dramas", "Action movies", "Top comedy movies"
-        if detected_genres and not detected_lang and re.search(r'\b(movie|movies|film|films|cinema|drama|action|horror|comedy|thriller|sci-fi|show|recommend|give|curation)\b', q_lower):
-            genre_name = detected_genres[0]
-            genre_recs = self.rec.get_by_genre(genre_name, 6)
-            if genre_recs:
-                if tone == "informal":
-                    reply = f"🎬 **Top-tier {genre_name} movies coming right up, {name}! (⭐ IMDb 0–10 scale):**"
-                elif tone == "formal":
-                    reply = f"🎬 **Distinguished Curation of Acclaimed {genre_name} Cinema (⭐ IMDb 0–10 scale):**\n\nIt is my distinct pleasure to present bespoke selections tailored to your courteous request:"
-                else:
-                    reply = f"🎬 **Acclaimed {genre_name} Selections from our Database (⭐ IMDb 0–10 scale):**"
-                return {
-                    "success": True,
-                    "reply": reply,
-                    "movies": genre_recs,
-                    "suggested_prompts": ["🍿 Surprise Me", f"🔥 More {genre_name} Hits", "⭐ Best Rated"],
-                    "mode": "genre_filter",
-                    "tone": tone
-                }
-
-        # E. Single Language Requests: "Telugu movies", "Hindi movies"
-        if detected_lang and not detected_genres and re.search(r'\b(movie|movies|film|films|cinema|show|recommend|give|curation)\b', q_lower):
-            lang_recs = self.rec.get_by_language(detected_lang, 6)
-            if lang_recs:
-                if tone == "informal":
-                    reply = f"🎬 **Here are the top-rated {detected_lang} blockbusters you've gotta watch (⭐ IMDb 0–10 scale):**"
-                elif tone == "formal":
-                    reply = f"🎬 **Distinguished Curation of Acclaimed {detected_lang} Cinema (⭐ IMDb 0–10 scale):**\n\nAllow me to present premier selections from our library:"
-                else:
-                    reply = f"🎬 **Distinguished {detected_lang} Cinema Selections (⭐ IMDb 0–10 scale):**"
-                return {
-                    "success": True,
-                    "reply": reply,
-                    "movies": lang_recs,
-                    "suggested_prompts": ["🍿 Surprise Me", f"🔥 More {detected_lang} Hits", f"🎬 {detected_lang} Thrillers", "⭐ Best Rated"],
-                    "mode": "language_filter",
-                    "tone": tone
-                }
-
-        # F. Surprise Me
-        if re.search(r'\b(surprise|random|pick one|choose for me|give me a movie|something good)\b', q_lower):
-            movie = self.rec.get_surprise_movie() or self.rec._get_top_rated(1)[0]
-            trailer_note = "🎬 In-page HD trailer available!" if movie.get("has_trailer") else ""
+            for m in unseen:
+                state["shown_movie_ids"].append(m["id"])
+            state["latest_recommended_movies"] = unseen
+            state["last_intent"] = "cast_filter"
 
             if tone == "informal":
-                reply = (
-                    f"🎉 **Boom! Here's your surprise pick, {name}:**\n\n"
-                    f"🎬 **{movie['title']}** ({movie['year']}) · *{movie.get('language', 'Cinema')}*\n\n"
-                    f"⭐ **IMDb Rating:** {movie['rating']}/10 · 🎭 **Genres:** {movie['genres'].replace('|', ', ')}\n\n"
-                    f"📝 *{movie.get('overview', '')[:220]}...*\n\n{trailer_note}"
-                )
+                reply = f"🌟 **{detected_cast} is an absolute icon!** Here are top-tier bangers starring {detected_cast} for you, my friend! 🍿🔥"
+            elif tone == "formal":
+                reply = f"🌟 **Distinguished Filmography of {detected_cast}:** Presented below is an esteemed curation of works from our collection:"
             else:
-                reply = (
-                    f"🎉 **Curated Surprise Selection:**\n\n"
-                    f"🎬 **{movie['title']}** ({movie['year']}) · *{movie.get('language', 'Cinema')}*\n\n"
-                    f"⭐ **IMDb Rating:** {movie['rating']}/10 · 🎭 **Genres:** {movie['genres'].replace('|', ', ')}\n\n"
-                    f"📝 *{movie.get('overview', '')[:220]}...*\n\n{trailer_note}"
-                )
+                reply = f"🌟 Here are top acclaimed movies starring **{detected_cast}** from our 60,000+ dataset:"
 
+            return {
+                "success": True,
+                "reply": reply,
+                "movies": unseen,
+                "suggested_prompts": ["➕ Show More Movies", "🔍 Tell me about the first one", "🍿 Surprise Me"],
+                "session_state": state,
+                "mode": "cast_filter",
+                "tone": tone
+            }
+
+        # B. Combined Language + Genre Filter (e.g. "Telugu horror movies", "Hindi action")
+        if detected_lang and detected_genres:
+            state["current_language"] = detected_lang
+            state["current_genres"] = detected_genres
+            genre_name = detected_genres[0]
+            shown_set = set(state.get("shown_movie_ids", []))
+
+            combined_recs = self.rec.get_by_genre_and_language(genre_name, detected_lang, limit=15)
+            unseen = [m for m in combined_recs if m["id"] not in shown_set][:5]
+            if not unseen:
+                unseen = combined_recs[:5]
+
+            for m in unseen:
+                state["shown_movie_ids"].append(m["id"])
+            state["latest_recommended_movies"] = unseen
+            state["last_intent"] = "combined_filter"
+
+            genres_title = " & ".join(detected_genres)
+            if tone == "informal":
+                reply = f"🎬 **Got you covered, {name}!** Here are top-tier **{detected_lang} {genres_title}** bangers matching both language and genre! 🍿🔥"
+            elif tone == "formal":
+                reply = f"🎬 **Bespoke Curation for {detected_lang} {genres_title} Cinema:** The following distinguished selections satisfy both criteria:"
+            else:
+                reply = f"🎬 Here are top acclaimed **{detected_lang} {genres_title}** movies from our dataset matching both criteria:"
+
+            return {
+                "success": True,
+                "reply": reply,
+                "movies": unseen,
+                "suggested_prompts": ["➕ Show More Movies", "🔍 Tell me about the first one", f"🔥 More {detected_lang} Hits", "🍿 Surprise Me"],
+                "session_state": state,
+                "mode": "combined_filter",
+                "tone": tone
+            }
+
+        # ── 8. MOOD REFINEMENT ("Make them more emotional", "Make them funnier") ──
+        detected_mood = self._detect_mood_shift(q_lower)
+        is_mood_refinement = bool(
+            detected_mood and not detected_lang and (
+                re.search(r'\b(make\s+them|more|something|give\s+me|turn|pivot|switch|want)\b', q_lower) or
+                word_count <= 3
+            )
+        )
+
+        if is_mood_refinement:
+            state["current_mood"] = detected_mood
+            mood_info = MOOD_MAP[detected_mood]
+            target_genres = [g.lower() for g in mood_info["genres"]]
+            shown_set = set(state.get("shown_movie_ids", []))
+            unseen = []
+
+            # 1. If we have an anchor movie, score candidates by similarity + mood genres
+            if state.get("current_movie_id"):
+                raw_similar = self.rec.get_content_recommendations(state["current_movie_id"], n=50, language=state.get("current_language"))
+                # Filter for mood genres
+                mood_matches = [m for m in raw_similar if m["id"] not in shown_set and any(g.lower() in str(m.get("genres", "")).lower() for g in target_genres)]
+                unseen.extend(mood_matches[:5])
+
+            # 2. If fewer than 5, pull from mood genres in dataset
+            if len(unseen) < 5:
+                for g in mood_info["genres"]:
+                    g_recs = self.rec.get_by_genre(g, n=25, language=state.get("current_language"), exclude_ids=list(shown_set))
+                    for m in g_recs:
+                        if m["id"] not in shown_set and m["id"] not in [x["id"] for x in unseen]:
+                            unseen.append(m)
+                            if len(unseen) >= 5:
+                                break
+                    if len(unseen) >= 5:
+                        break
+
+            for m in unseen:
+                state["shown_movie_ids"].append(m["id"])
+            state["latest_recommended_movies"] = unseen
+            state["last_intent"] = "mood_refinement"
+
+            reply = mood_info.get("reply_intro", f"Sure! Here are some more {detected_mood} options:")
+            return {
+                "success": True,
+                "reply": reply,
+                "movies": unseen,
+                "suggested_prompts": ["➕ Show More Movies", "🔍 Tell me about the first one", "🌀 Mind-Bending Options", "🍿 Surprise Me"],
+                "session_state": state,
+                "mode": "mood_refinement",
+                "tone": tone
+            }
+
+        # ── 9. INITIAL MOVIE REQUEST ("I liked Interstellar", "Interstellar", "I liked Interstellar and Inception") ──
+        prompt_res = self.rec.recommend_by_prompt(raw_msg, limit=6, language=state.get("current_language"))
+        matched_movies = prompt_res.get("matched_movies", [])
+        has_movie_intent = bool(
+            re.search(r'\b(liked|like|loved|love|watched|enjoyed|favorite|similar|movies\s+like|films\s+like|recommend|fan\s+of)\b', q_lower) or
+            (matched_movies and word_count <= 6)
+        )
+
+        if matched_movies and has_movie_intent:
+            shown_set = set(state.get("shown_movie_ids", []))
+            
+            if len(matched_movies) == 1:
+                target_m = matched_movies[0]
+                state["current_movie_id"] = target_m["id"]
+                state["current_movie_title"] = target_m["title"]
+                state["current_genres"] = [g.strip() for g in str(target_m.get("genres", "")).split("|") if g.strip()]
+
+                raw_recs = prompt_res.get("recommendations", [])
+                unseen_recs = [m for m in raw_recs if m["id"] not in shown_set and m["id"] != target_m["id"]][:4]
+
+                # Fallback if fewer than 4 recs
+                if len(unseen_recs) < 4:
+                    extra_recs = self.rec.get_content_recommendations(target_m["id"], n=10, language=state.get("current_language"))
+                    for em in extra_recs:
+                        if em["id"] not in shown_set and em["id"] != target_m["id"] and em["id"] not in [x["id"] for x in unseen_recs]:
+                            unseen_recs.append(em)
+                            if len(unseen_recs) >= 4:
+                                break
+
+                # Display input movie itself as #1, followed by top 4 related movies
+                result_movies = [target_m] + unseen_recs
+
+                for m in result_movies:
+                    state["shown_movie_ids"].append(m["id"])
+                state["latest_recommended_movies"] = result_movies
+                state["last_intent"] = "movie_recommendation"
+
+                if tone == "informal":
+                    reply = f"Great choice, **{name}**! Here is **{target_m['title']}** (⭐ {target_m['rating']}/10) followed by top similar movies based on theme, genre, and storytelling:"
+                elif tone == "formal":
+                    reply = f"An exquisite selection. Presented below is **{target_m['title']}** (⭐ {target_m['rating']}/10) followed by a bespoke curation of distinguished akin works:"
+                else:
+                    reply = f"Great choice! Here is **{target_m['title']}** (⭐ {target_m['rating']}/10) followed by top movies you might enjoy based on theme and storytelling:"
+
+            else:
+                # Multi-movie preference (e.g. "I liked Interstellar and Inception")
+                state["current_movie_id"] = matched_movies[0]["id"]
+                state["current_movie_title"] = ' & '.join([m['title'] for m in matched_movies])
+                
+                raw_recs = prompt_res.get("recommendations", [])
+                matched_ids = {m["id"] for m in matched_movies}
+                needed_recs = max(1, 5 - len(matched_movies))
+                unseen_recs = [m for m in raw_recs if m["id"] not in shown_set and m["id"] not in matched_ids][:needed_recs]
+
+                result_movies = matched_movies + unseen_recs
+
+                for m in result_movies:
+                    state["shown_movie_ids"].append(m["id"])
+                state["latest_recommended_movies"] = result_movies
+                state["last_intent"] = "multi_movie_recommendation"
+
+                titles_str = ' and '.join([f"**{m['title']}**" for m in matched_movies])
+
+                if tone == "informal":
+                    reply = f"Awesome taste, **{name}**! You like both {titles_str}! Here are your matched picks followed by combined recommendations:"
+                elif tone == "formal":
+                    reply = f"Distinguished preferences. Acknowledging your affinity for {titles_str}, presented below are the matched titles accompanied by synergistic recommendations:"
+                else:
+                    reply = f"Awesome taste! Recognizing your preference for {titles_str}, here are both movies followed by recommendations matching their combined themes:"
+
+            return {
+                "success": True,
+                "reply": reply,
+                "movies": result_movies,
+                "suggested_prompts": [
+                    "➕ Show More Movies",
+                    "🎭 Make them more emotional",
+                    "🌀 Mind-Bending Concepts",
+                    "🔍 Tell me about the first one"
+                ],
+                "session_state": state,
+                "mode": "movie_recommendation",
+                "tone": tone
+            }
+
+        # ── 10. SINGLE GENRE OR LANGUAGE REQUESTS ─────────────────────────────
+        if detected_genres and not detected_lang:
+            genre_name = detected_genres[0]
+            state["current_genres"] = detected_genres
+            shown_set = set(state.get("shown_movie_ids", []))
+            genre_recs = self.rec.get_by_genre(genre_name, n=15, exclude_ids=list(shown_set))
+            unseen = [m for m in genre_recs if m["id"] not in shown_set][:5]
+            if not unseen:
+                unseen = genre_recs[:5]
+
+            for m in unseen:
+                state["shown_movie_ids"].append(m["id"])
+            state["latest_recommended_movies"] = unseen
+            state["last_intent"] = "genre_filter"
+
+            if tone == "informal":
+                reply = f"🎬 **Top-tier {genre_name} bangers coming right up, {name}! (⭐ IMDb 0–10 scale):**"
+            elif tone == "formal":
+                reply = f"🎬 **Distinguished Curation of Acclaimed {genre_name} Cinema (⭐ IMDb 0–10 scale):**\n\nIt is my distinct pleasure to present bespoke selections tailored to your courteous request:"
+            else:
+                reply = f"🎬 **Top-rated {genre_name} movies coming right up:**"
+
+            return {
+                "success": True,
+                "reply": reply,
+                "movies": unseen,
+                "suggested_prompts": ["➕ Show More Movies", "🔍 Tell me about the first one", "🍿 Surprise Me"],
+                "session_state": state,
+                "mode": "genre_filter",
+                "tone": tone
+            }
+
+        if detected_lang and not detected_genres:
+            state["current_language"] = detected_lang
+            shown_set = set(state.get("shown_movie_ids", []))
+            lang_recs = self.rec.get_by_language(detected_lang, n=15)
+            unseen = [m for m in lang_recs if m["id"] not in shown_set][:5]
+            if not unseen:
+                unseen = lang_recs[:5]
+
+            for m in unseen:
+                state["shown_movie_ids"].append(m["id"])
+            state["latest_recommended_movies"] = unseen
+            state["last_intent"] = "language_filter"
+
+            if tone == "informal":
+                reply = f"🎬 **Here are the top-rated {detected_lang} blockbusters you've gotta watch (⭐ IMDb 0–10 scale):**"
+            elif tone == "formal":
+                reply = f"🎬 **Distinguished Curation of Acclaimed {detected_lang} Cinema (⭐ IMDb 0–10 scale):**\n\nAllow me to present premier selections from our library:"
+            else:
+                reply = f"🎬 **Acclaimed {detected_lang} Cinema selections:**"
+
+            return {
+                "success": True,
+                "reply": reply,
+                "movies": unseen,
+                "suggested_prompts": ["➕ Show More Movies", "🔍 Tell me about the first one", f"🔥 More {detected_lang} Hits"],
+                "session_state": state,
+                "mode": "language_filter",
+                "tone": tone
+            }
+
+        # ── 11. SURPRISE ME ───────────────────────────────────────────────────
+        if re.search(r'\b(surprise|random|pick one|choose for me|give me a movie)\b', q_lower):
+            movie = self.rec.get_surprise_movie() or self.rec._get_top_rated(1)[0]
+            state["shown_movie_ids"].append(movie["id"])
+            state["latest_recommended_movies"] = [movie]
+            state["current_movie_id"] = movie["id"]
+            state["current_movie_title"] = movie["title"]
+
+            reply = (
+                f"🎉 **Boom! Here's your surprise pick, {name}:**\n\n"
+                f"🎬 **{movie['title']}** ({movie['year']}) · *{movie.get('language', 'Cinema')}*\n"
+                f"⭐ **IMDb Rating:** {movie['rating']}/10 · 🎭 **Genres:** {movie['genres'].replace('|', ', ')}\n\n"
+                f"📝 *{movie.get('overview', '')[:220]}...*"
+            )
             return {
                 "success": True,
                 "reply": reply,
                 "movies": [movie],
                 "suggested_prompts": ["🍿 Another Surprise", f"🔍 Similar to {movie['title']}", "▶ Watch Trailer"],
+                "session_state": state,
                 "mode": "surprise",
                 "tone": tone
             }
 
-        # G. ML Architecture Explanation
-        if re.search(r'\b(how.*(work|algorithm|ml|model|recommend)|explain.*model|what algorithm)\b', q_lower):
-            stats = self.rec.get_model_stats()
-            reply = (
-                f"🧠 **Architecture & Recommendation Pipeline:**\n\n"
-                f"1. **TF-IDF Content Vectorization**: Semantic encoding across **{stats['total_movies']:,} movies** utilizing **{stats['vocab_size']:,} lexical features**.\n"
-                f"2. **Cosine Similarity Space**: Sub-millisecond mathematical angle calculation between plot themes, synopses, and genres.\n"
-                f"3. **Dynamic Collaborative Filtering**: Interaction matrices from user ratings to detect taste clusters.\n"
-                f"4. **Multi-Filter & Typo Normalization Engine**: Handles misspellings (*'telgu horr movis'*) and cross-language constraints.\n"
-                f"5. **Hybrid Precision Blending**: Verified model accuracy at **{stats['accuracy_score']}**."
-            )
-            return {
-                "success": True,
-                "reply": reply,
-                "movies": self.rec.get_trending(3),
-                "suggested_prompts": ["🍿 Test with Interstellar", "🎭 Compare Algorithms", "⭐ Take Taste Quiz"],
-                "mode": "explanation",
-                "tone": tone
-            }
-
-        # ── 6. SINGLE MOVIE TITLE INQUIRY (DO NOT IMMEDIATELY RECOMMEND) ──────
-        # If user entered ONLY a movie name without action/request words,
-        # acknowledge the choice and ask an intelligent follow-up question.
-        clean_title_candidate = re.sub(r'[^a-zA-Z0-9\s]', '', raw_msg).strip()
-        matched_title_movies = self.rec.find_by_title(clean_title_candidate, limit=1)
-
-        # Check if query is short and represents a specific movie title
-        if matched_title_movies and word_count <= 5 and not is_explicit_rec_request:
-            target_m = matched_title_movies[0]
-            title_lower = target_m["title"].lower()
-
-            # Bespoke follow-up questions for famous titles
-            if "interstellar" in title_lower or "interstellar" in q_lower:
-                reply = "Great choice! 🌌 What did you enjoy most about Interstellar — the space exploration, science, emotional story, or mind-bending concepts?"
-                prompts = ["🚀 Space Exploration", "🧪 Hard Science", "❤️ Emotional Story", "🌀 Mind-Bending Concepts", "🎬 Recommend Similar Movies"]
-            elif "inception" in title_lower or "inception" in q_lower:
-                reply = "A legendary mind-bender! 🌀 What hooked you the most about Inception — the dream heist concept, psychological thrill, or Christopher Nolan's direction?"
-                prompts = ["🌀 Dream Heist Concept", "🧠 Psychological Thrill", "🎬 Nolan Direction", "🌟 Leonardo DiCaprio Movies", "🎬 Recommend Similar Movies"]
-            elif "dark knight" in title_lower or "batman" in title_lower:
-                reply = "An absolute superhero masterpiece! 🦇 What made The Dark Knight stand out for you — Heath Ledger's Joker, the gritty crime thriller plot, or the dark superhero theme?"
-                prompts = ["🃏 Heath Ledger / Joker", "🦇 Gritty Crime Thriller", "🎬 Christopher Nolan Films", "🎬 Recommend Similar Movies"]
-            elif "titanic" in title_lower:
-                reply = "A timeless epic! 🚢 What touched you most about Titanic — the sweeping romantic drama, the historical disaster spectacle, or Leonardo DiCaprio's performance?"
-                prompts = ["❤️ Romantic Drama", "🚢 Disaster Spectacle", "🌟 Leonardo DiCaprio Films", "🎬 Recommend Similar Movies"]
-            elif "baahubali" in title_lower:
-                reply = "An epic grand spectacle! ⚔️ What did you enjoy most about Baahubali — the royal kingdom drama, the massive war action, or Prabhas's iconic performance?"
-                prompts = ["⚔️ Epic War Action", "👑 Royal Kingdom Drama", "🌟 Prabhas Landmark Films", "🎬 Recommend Similar Movies"]
-            elif "rrr" in title_lower or clean_title_candidate.lower() == "rrr":
-                reply = "High-octane patriotic adrenaline! 🔥 What was your favorite part about RRR — the electrifying action sequences, the friendship between Ram & Bheem, or S.S. Rajamouli's direction?"
-                prompts = ["🔥 High-Energy Action", "🤝 Friendship & Drama", "🎬 Rajamouli Spectacles", "🎬 Recommend Similar Movies"]
-            else:
-                genres_first = (target_m.get("genres") or "cinema").split("|")[0]
-                reply = f"Great choice! 🎬 What did you enjoy most about **{target_m['title']}** — the storyline, the {genres_first} theme, the emotional depth, or would you like me to recommend similar movies?"
-                prompts = [f"🎬 Movies like {target_m['title']}", f"⭐ More {genres_first} Hits", "🍿 Surprise Me"]
-
-            return {
-                "success": True,
-                "reply": reply,
-                "movies": [],  # Do NOT immediately dump movies; wait for user follow-up!
-                "suggested_prompts": prompts,
-                "mode": "movie_followup_question",
-                "tone": tone
-            }
-
-        # ── 7. FALLBACK NATURAL LANGUAGE SEARCH ───────────────────────────────
-        prompt_res = self.rec.recommend_by_prompt(raw_msg, limit=6)
+        # ── 12. NATURAL SEARCH FALLBACK ───────────────────────────────────────
+        prompt_res = self.rec.recommend_by_prompt(raw_msg, limit=8)
         search_movies = prompt_res.get("movies", [])
         if search_movies:
-            if tone == "informal":
-                reply = f"🎬 **Found some great titles matching *'{raw_msg}'* (⭐ IMDb 0–10 scale):**"
-            else:
-                reply = f"🎬 **Distinguished Selections matching *'{raw_msg}'* (⭐ IMDb 0–10 scale):**"
+            shown_set = set(state.get("shown_movie_ids", []))
+            unseen = [m for m in search_movies if m["id"] not in shown_set][:5]
+            if not unseen:
+                unseen = search_movies[:5]
+
+            for m in unseen:
+                state["shown_movie_ids"].append(m["id"])
+            state["latest_recommended_movies"] = unseen
+            state["last_intent"] = "search"
+
+            reply = f"🎬 **Found some great titles matching *'{raw_msg}'*:**"
             return {
                 "success": True,
                 "reply": reply,
-                "movies": search_movies[:6],
-                "suggested_prompts": ["🍿 Surprise Me", "🔥 What's Trending?", "⭐ Best Rated"],
+                "movies": unseen,
+                "suggested_prompts": ["➕ Show More Movies", "🔍 Tell me about the first one", "🍿 Surprise Me"],
+                "session_state": state,
                 "mode": "search",
                 "tone": tone
             }
 
-        # Final conversational fallback
-        reply = f"I'd love to help you find a great movie! 😊 Tell me a title you loved, a genre (*'action'*, *'horror'*, *'comedy'*), an actor (*'Tom Hanks'*, *'Leonardo DiCaprio'*), or ask for a surprise!"
+        # ── 13. FINAL FRIENDLY FALLBACK ───────────────────────────────────────
+        reply = "I'd love to help you find a great movie! 😊 Tell me a title you loved (e.g. *'I liked Interstellar'*), a genre (*'action'*, *'horror'*, *'comedy'*), an actor (*'Tom Hanks'*, *'Prabhas'*), or ask for a surprise!"
         return {
             "success": True,
             "reply": reply,
             "movies": [],
-            "suggested_prompts": ["🍿 Surprise Me", "🎬 Telugu Horror", "🔥 Hindi Action", "😂 Tell a Joke"],
+            "suggested_prompts": ["🌌 I liked Interstellar", "🎬 Telugu Horror", "🔥 Hindi Action", "🍿 Surprise Me"],
+            "session_state": state,
             "mode": "conversation",
             "tone": tone
         }
-
-    def _generate_followup_prompts(self, query, movies, tone="balanced"):
-        """Generates dynamic, contextual follow-up chip prompts"""
-        chips = []
-        if movies:
-            first_title = movies[0].get("title", "")
-            if len(first_title) < 20:
-                chips.append(f"🎬 Trailer for {first_title}")
-                chips.append(f"🔍 Similar to {first_title}")
-        if tone == "informal":
-            chips.append("🍿 Surprise Me Bro")
-            chips.append("😂 Drop a Joke")
-        else:
-            chips.append("🍿 Surprise Me")
-            chips.append("⭐ Top Rated")
-        return chips[:4]
