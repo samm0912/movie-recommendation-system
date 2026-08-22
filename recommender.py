@@ -563,12 +563,14 @@ class MovieRecommender:
 
         # Precompute language-based index sets (covering canonical movies and their available languages)
         self.language_indices = {}
+        lang_arr = self.movies_df['language'].values
+        avail_arr = self.movies_df['available_languages'].values if 'available_languages' in self.movies_df.columns else lang_arr
+
         for i in self.canonical_indices:
-            row = self.movies_df.iloc[i]
-            l_key = str(row['language']).lower().strip()
+            l_key = str(lang_arr[i]).lower().strip()
             self.language_indices.setdefault(l_key, []).append(i)
             # Register other available language versions for this canonical movie
-            avail_str = str(row.get('available_languages', ''))
+            avail_str = str(avail_arr[i])
             for al in avail_str.split('|'):
                 al_key = al.lower().strip()
                 if al_key and al_key != l_key:
@@ -576,9 +578,10 @@ class MovieRecommender:
 
         # Precompute genre-based index sets for canonical movies
         self.genre_indices = {}
+        genres_arr = self.movies_df['genres'].values
         for i in self.canonical_indices:
-            g_str = self.movies_df.iloc[i]['genres']
-            for g in str(g_str).split('|'):
+            g_str = str(genres_arr[i])
+            for g in g_str.split('|'):
                 g_key = g.lower().strip()
                 if g_key and g_key != 'unknown':
                     self.genre_indices.setdefault(g_key, []).append(i)
@@ -614,10 +617,6 @@ class MovieRecommender:
                 clean_kt = re.sub(r'\s+', ' ', clean_kt)
                 if clean_kt in self.title_to_idx:
                     c_indices.extend(self.title_to_idx[clean_kt])
-                else:
-                    for t_key, idxs in self.title_to_idx.items():
-                        if clean_kt in t_key or (len(clean_kt) >= 5 and t_key in clean_kt):
-                            c_indices.extend(idxs)
 
             seen_c = set()
             ordered_c = []
@@ -958,7 +957,7 @@ class MovieRecommender:
         self.user_ids = list(self.user_movie_matrix.index)
 
     def get_collab_recommendations(self, user_id, n=6, language=None):
-        """Recommends movies liked by similar users (Canonical Deduplicated)"""
+        """Recommends movies liked by similar users with taste profile enhancement (Canonical Deduplicated)"""
         if user_id not in self.user_ids or len(self.user_ids) < 2:
             return self._get_top_rated(n, language=language)
 
@@ -966,9 +965,20 @@ class MovieRecommender:
         sim_scores = list(enumerate(self.user_sim[user_idx]))
         sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
 
-        rated_movies = set(
-            self.ratings_df[self.ratings_df["user_id"] == user_id]["movie_id"]
-        )
+        user_ratings = self.ratings_df[self.ratings_df["user_id"] == user_id]
+        rated_movies = set(user_ratings["movie_id"])
+
+        # Extract user's preferred genres from high ratings
+        high_rated_mids = user_ratings[user_ratings["rating"] >= 4]["movie_id"].tolist()
+        user_preferred_genres = set()
+        for mid in high_rated_mids:
+            cid = self.variant_id_to_canonical_id.get(int(mid), int(mid))
+            idx = self.id_to_idx.get(cid)
+            if idx is not None:
+                for g in str(self.movies_df.iloc[idx]['genres']).split('|'):
+                    g_clean = g.strip().lower()
+                    if g_clean and g_clean != 'unknown':
+                        user_preferred_genres.add(g_clean)
 
         recommended = {}
         for sim_idx, score in sim_scores[1:6]:
@@ -983,7 +993,14 @@ class MovieRecommender:
             for _, row in similar_user_movies.iterrows():
                 mid = int(row["movie_id"])
                 cid = self.variant_id_to_canonical_id.get(mid, mid)
-                recommended[cid] = recommended.get(cid, 0) + (score * row["rating"])
+                c_idx = self.id_to_idx.get(cid)
+                if c_idx is not None:
+                    # Genre affinity and quality weighting
+                    item_genres = set([g.strip().lower() for g in str(self.movies_df.iloc[c_idx]['genres']).split('|') if g.strip()])
+                    genre_overlap = len(user_preferred_genres & item_genres)
+                    genre_factor = 1.35 if genre_overlap >= 2 else (1.15 if genre_overlap == 1 else 0.85)
+                    q_mult = self.quality_multiplier[c_idx]
+                    recommended[cid] = recommended.get(cid, 0) + (score * row["rating"] * genre_factor * q_mult)
 
         if not recommended:
             return self._get_top_rated(n, language=language)
@@ -997,43 +1014,114 @@ class MovieRecommender:
 
         deduped = self._deduplicate_canonical_movies(raw_list, limit=n, preferred_language=language)
         if len(deduped) < n:
-            extras = self._get_top_rated(n * 2, language=language)
-            for em in extras:
-                if em['canonical_id'] not in [x['canonical_id'] for x in deduped]:
-                    deduped.append(em)
-                    if len(deduped) >= n:
-                        break
+            if user_preferred_genres:
+                top_genre_list = []
+                for g in list(user_preferred_genres)[:2]:
+                    top_genre_list.extend(self.get_by_genre(g, n=n, language=language))
+                for tg in top_genre_list:
+                    if tg['canonical_id'] not in [x['canonical_id'] for x in deduped]:
+                        deduped.append(tg)
+                        if len(deduped) >= n:
+                            break
+            if len(deduped) < n:
+                extras = self._get_top_rated(n * 2, language=language)
+                for em in extras:
+                    if em['canonical_id'] not in [x['canonical_id'] for x in deduped]:
+                        deduped.append(em)
+                        if len(deduped) >= n:
+                            break
 
         return deduped[:n]
 
     # ── 4. Hybrid Recommendations ──────────────────────────────────────────
     def get_hybrid_recommendations(self, user_id, liked_movie_id=None, n=6, language=None):
-        """Blends collaborative and content-based recommendations (Canonical Deduplicated)"""
-        collab = self.get_collab_recommendations(user_id, n, language=language)
-        if liked_movie_id and liked_movie_id in self.id_to_idx:
-            content = self.get_content_recommendations(liked_movie_id, n, language=language)
-        else:
-            content = []
+        """
+        State-of-the-Art Weighted Hybrid Recommendation Engine (Canonical Deduplicated)
+        Combines Sublinear TF-IDF Cosine Similarity, Collaborative User Similarity, 
+        Genre Affinity, and Bayesian Quality Multipliers into a unified ranking score.
+        """
+        if not liked_movie_id:
+            return self.get_collab_recommendations(user_id, n=n, language=language)
 
-        seen_canonical = set()
-        merged = []
-        for m in collab + content:
-            cid = int(m.get('canonical_id', m.get('id', 0)))
-            if cid not in seen_canonical:
-                seen_canonical.add(cid)
-                merged.append(m)
+        cid = self.variant_id_to_canonical_id.get(int(liked_movie_id), int(liked_movie_id))
+        anchor_idx = self.id_to_idx.get(cid, self.id_to_idx.get(int(liked_movie_id)))
+        if anchor_idx is None:
+            return self.get_collab_recommendations(user_id, n=n, language=language)
 
-        if len(merged) < n:
-            top_rated = self._get_top_rated(n * 2, language=language)
-            for m in top_rated:
-                cid = int(m.get('canonical_id', m.get('id', 0)))
-                if cid not in seen_canonical:
-                    seen_canonical.add(cid)
-                    merged.append(m)
-                    if len(merged) >= n:
-                        break
+        # 1. High-Speed Vectorized Content Similarity
+        sim_scores = self.tfidf_matrix[anchor_idx].dot(self.tfidf_matrix.T).toarray().flatten()
+        sim_scores[anchor_idx] = -1.0
 
-        return merged[:n]
+        anchor_title = re.sub(r'[^a-zA-Z0-9\s]', ' ', str(self.movies_df.iloc[anchor_idx]['title']).lower()).strip()
+        anchor_title = re.sub(r'\s+', ' ', anchor_title)
+        for i, t in enumerate(self.movies_df['title'].values):
+            t_clean = re.sub(r'[^a-zA-Z0-9\s]', ' ', str(t).lower()).strip()
+            t_clean = re.sub(r'\s+', ' ', t_clean)
+            if anchor_title == t_clean or (len(anchor_title) >= 5 and (anchor_title in t_clean or t_clean in anchor_title)):
+                sim_scores[i] = -1.0
+
+        # Genre affinity boost
+        source_genres = set([g.strip().lower() for g in str(self.movies_df.iloc[anchor_idx]['genres']).split('|') if g.strip() and g.strip().lower() != 'unknown'])
+        genre_boost = np.ones(len(self.movies_df))
+        for i, g_str in enumerate(self.movies_df['genres'].values):
+            c_genres = set([g.strip().lower() for g in str(g_str).split('|') if g.strip()])
+            shared = len(source_genres & c_genres)
+            if shared >= 2:
+                genre_boost[i] = 1.35
+            elif shared == 1:
+                genre_boost[i] = 1.10
+            else:
+                genre_boost[i] = 0.50
+
+        content_scores = sim_scores * self.quality_multiplier * genre_boost
+        content_scores[anchor_idx] = -1.0
+
+        # 2. Collaborative Affinity Scoring
+        collab_scores = np.zeros(len(self.movies_df))
+        if user_id in self.user_ids:
+            user_idx = self.user_ids.index(user_id)
+            sim_users = list(enumerate(self.user_sim[user_idx]))
+            sim_users = sorted(sim_users, key=lambda x: x[1], reverse=True)
+            rated_mids = set(self.ratings_df[self.ratings_df["user_id"] == user_id]["movie_id"])
+            for sim_idx, score in sim_users[1:5]:
+                if score <= 0:
+                    continue
+                sim_uid = self.user_ids[sim_idx]
+                sim_movies = self.ratings_df[
+                    (self.ratings_df["user_id"] == sim_uid) &
+                    (self.ratings_df["rating"] >= 4) &
+                    (~self.ratings_df["movie_id"].isin(rated_mids))
+                ]
+                for _, row in sim_movies.iterrows():
+                    m_id = int(row["movie_id"])
+                    c_id = self.variant_id_to_canonical_id.get(m_id, m_id)
+                    c_idx = self.id_to_idx.get(c_id)
+                    if c_idx is not None and c_idx != anchor_idx:
+                        collab_scores[c_idx] += score * (row["rating"] / 5.0)
+
+        # Normalize and blend
+        max_c = np.max(content_scores) if np.max(content_scores) > 0 else 1.0
+        max_col = np.max(collab_scores) if np.max(collab_scores) > 0 else 1.0
+        norm_content = np.maximum(0, content_scores) / max_c
+        norm_collab = np.maximum(0, collab_scores) / max_col
+
+        hybrid_scores = (0.75 * norm_content + 0.25 * norm_collab) * self.quality_multiplier
+
+        # Language filtering if requested
+        if language and language.lower() != 'all':
+            lang_key = language.lower().strip()
+            valid_indices = set(self.language_indices.get(lang_key, []))
+            mask = np.zeros(len(self.movies_df), dtype=bool)
+            for vi in valid_indices:
+                mask[vi] = True
+            hybrid_scores[~mask] = -1.0
+
+        top_indices = np.argsort(-hybrid_scores)[:n * 4]
+        raw_recs = [
+            self.movies_df.iloc[i].to_dict()
+            for i in top_indices if hybrid_scores[i] > 0 and i != anchor_idx
+        ]
+        return self._deduplicate_canonical_movies(raw_recs, limit=n, preferred_language=language)
 
     # ── 5. Multi-Language Support ──────────────────────────────────────────
     def get_languages(self):
